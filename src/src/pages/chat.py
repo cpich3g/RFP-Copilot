@@ -4,8 +4,8 @@ import json
 import os
 import pathlib
 import sys
-import time
 from time import sleep
+from typing import Callable, Mapping
 
 # Third-party imports
 import streamlit as st
@@ -14,26 +14,17 @@ from azure.search.documents import SearchClient
 from dotenv import load_dotenv
 from streamlit_option_menu import option_menu
 
-# Semantic Kernel imports
-from semantic_kernel import Kernel
-from semantic_kernel.agents import AgentGroupChat, ChatCompletionAgent
-from semantic_kernel.agents.strategies import (
-    KernelFunctionSelectionStrategy,
-    KernelFunctionTerminationStrategy,
-)
-from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
-from semantic_kernel.contents import ChatHistoryTruncationReducer
-from semantic_kernel.functions import KernelFunctionFromPrompt
+from agent_framework_session import AgentFrameworkSession
+from agent_framework import ChatMessage, TextContent
+from rfp_agents import VendorContext
+from workflows.vendor_workflow import build_vendor_workflow, run_vendor_workflow, VendorWorkflowResult
 
 # Application-specific imports
-from app import (
-    create_kernel,
-    get_agent_prompts,
-    AGENT_NAMES,
-)
+from app import create_chat_client, get_agent_prompts, get_reasoning_options
 from plugins.legal_compliance_plugin import LegalCompliancePlugin
 from plugins.vendor_evaluation_plugin import VendorEvaluationPlugin
 from plugins.market_intelligence_plugin import MarketIntelligencePlugin
+from components.settings_drawer import render_global_settings
 # from speech import transcribe_real_time_audio
 
 # Custom config
@@ -43,161 +34,30 @@ st.set_page_config(layout="wide")
 # Load environment variables
 load_dotenv()
 
+MARKET_INTELLIGENCE_DATASET = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "documents", "market-intelligence.json")
+)
+
 # Function to load CSS styles from a file
-def load_css(file_name):  
-    with open(file_name) as f:  
+def load_css(file_path):  
+    with open(file_path, encoding="utf-8") as f:  
         st.html(f"<style>{f.read()}</style>")
 
-css_path = pathlib.Path("style.css")
-load_css(css_path)
+css_path = pathlib.Path(__file__).resolve().parent.parent / "style.css"
+if css_path.exists():
+    load_css(css_path)
+else:
+    st.warning(f"CSS file not found at {css_path}")
 
 legal_policy_index = os.getenv("LEGAL_POLICY_INDEX")
 supplier_insights_index = os.getenv("SUPPLIER_INDEX")
 # Function to initialize the chat system
-async def initialize_chat():
-
-    kernel = create_kernel()
-    prompt_instructions = get_agent_prompts()
-    rfp_summary = st.session_state.rfp_summary_ready
-    proposal_summary = st.session_state.vendor_summary_ready
-    market_intelligence_dataset = os.path.join(os.path.dirname(__file__), "..", "documents", "market-intelligence.json")
-    market_intelligence_dataset = os.path.abspath(market_intelligence_dataset)
-
-    ###########################################################################################
-
-    # For Legal Compliance Agent...
-    legal_search_client = SearchClient(endpoint=os.environ.get("AZURE_AI_SEARCH_ENDPOINT"), 
-                                       index_name=legal_policy_index, 
-                                       credential=AzureKeyCredential(os.environ.get("AZURE_AI_SEARCH_API_KEY")))                      
-    legal_compliance_plugin = LegalCompliancePlugin(search_client=legal_search_client, vendor_legal_summary=proposal_summary.get("legal_summary", ""))
-    policy_context = await legal_compliance_plugin.check_compliance()
-
-    # For Vendor Evaluation Agent...
-    vendor_search_client = SearchClient(endpoint=os.environ.get("AZURE_AI_SEARCH_ENDPOINT"), 
-                                          index_name=supplier_insights_index, 
-                                          credential=AzureKeyCredential(os.environ.get("AZURE_AI_SEARCH_API_KEY")))
-    vendor_evaluation_plugin = VendorEvaluationPlugin(search_client=vendor_search_client, vendor_name=proposal_summary.get("vendor_name", "Unknown Vendor"))
-    vendor_insights = await vendor_evaluation_plugin.get_vendor_insights()
-
-    # For Market Intelligence Agent...
-    market_intelligence_plugin = MarketIntelligencePlugin(market_intelligence_dataset)
-    market_insights = market_intelligence_plugin.get_market_insights("Cloud Computing")
-
-    ###########################################################################################
-
-    # Create agents
-    rfp_compliance_agent = ChatCompletionAgent(
-        kernel=kernel,
-        name=AGENT_NAMES["rfp_compliance"],
-        instructions=f"{prompt_instructions['rfp_compliance']}\n\n### RFP Summary:\n{rfp_summary}\n### Proposal Summary:\n{proposal_summary.get('overall_summary', 'No overall summary provided.')}"
+async def initialize_chat(stream_handler: Callable[[str, str], None] | None = None):
+    session, initial_messages, _ = await build_session_for_vendor(
+        st.session_state.chat_selected_vendor_index,
+        stream_handler=stream_handler,
     )
-    
-    legal_compliance_agent = ChatCompletionAgent(
-        kernel=kernel,
-        name=AGENT_NAMES["legal_compliance"],
-        instructions=f"{prompt_instructions['legal_compliance']}\n\n### Vendor Legal Summary:\n{proposal_summary.get('legal_summary', '')}\n\n### Retrieved Policy Context:\n{policy_context}"
-    )
-    
-    vendor_evaluation_agent = ChatCompletionAgent(
-        kernel=kernel,
-        name=AGENT_NAMES["vendor_evaluation"],
-        instructions=f"{prompt_instructions['vendor_evaluation']}\n\n### Vendor Insights:\n{vendor_insights}"
-    )
-
-    market_intelligence_agent = ChatCompletionAgent(
-        kernel=kernel,
-        name=AGENT_NAMES["market_intelligence"],
-        instructions=f"{prompt_instructions['market_intelligence']}\n\n### Market Insights:\n{market_insights}"
-    )
-
-    negotiation_strategy_agent = ChatCompletionAgent(
-        kernel=kernel,
-        name=AGENT_NAMES["negotiation_strategy"],
-        instructions=f"{prompt_instructions['negotiation_strategy']}"
-    )
-    
-    evaluation_report_agent = ChatCompletionAgent(
-        kernel=kernel,
-        name=AGENT_NAMES["evaluation_report"],
-        instructions=f"{prompt_instructions['evaluation_report']}"
-    )
-
-    ###########################################################################################
-
-    # Define a selection function to determine which agent should take the next turn.
-    selection_function = KernelFunctionFromPrompt(
-    function_name="selection",
-    prompt=f"""
-    You are responsible for selecting the next agent in the workflow.
-    Examine the provided RESPONSE and choose the next participant.
-    State only the name of the chosen participant without explanation.
-    Never choose the participant named in the RESPONSE.
-
-    ### Rules:
-    - If the user has just started, follow this strict sequence:
-      1. First, call {AGENT_NAMES["rfp_compliance"]}.
-      2. Next, call {AGENT_NAMES["legal_compliance"]}.
-      3. Then, call {AGENT_NAMES["vendor_evaluation"]}.
-      4. Then, call {AGENT_NAMES["market_intelligence"]}.
-      5. Then, call {AGENT_NAMES["negotiation_strategy"]}.
-      6. Finally, call {AGENT_NAMES["evaluation_report"]}.
-    - **Do NOT skip any agent in the sequence.**
-    - **Each agent runs exactly ONCE but AT LEAST once during evaluation.**
-    
-    - After the full evaluation is complete:
-      - If the user asks about **compliance issues**, select {AGENT_NAMES["legal_compliance"]}.
-      - If the user asks about **vendor history, reputation, or credibility**, select {AGENT_NAMES["vendor_evaluation"]}.
-      - If the user asks about **industry insights or trends**, select {AGENT_NAMES["market_intelligence"]}.
-      - If the user asks about **negotiation recommendations**, select {AGENT_NAMES["negotiation_strategy"]}.
-      - If the user asks about **the final report or modifications**, select {AGENT_NAMES["evaluation_report"]}.
-      - If unsure, default to {AGENT_NAMES["evaluation_report"]}.
-
-    RESPONSE:
-    {{{{$lastmessage}}}}
-    """,
-    )
-
-    # Define a termination function where the final agent signals completion.
-    termination_keyword = "yes"
-    termination_function = KernelFunctionFromPrompt(
-        function_name="termination",
-        prompt=f"""
-       If all checks and evaluations are completed, respond 'yes'. Otherwise, respond 'no'.
-
-        RESPONSE:
-        {{{{$lastmessage}}}}
-        """,
-    )
-
-    history_reducer = ChatHistoryTruncationReducer(target_count=10)
-
-    # Create the AgentGroupChat with selection and termination strategies.
-    chat = AgentGroupChat(
-        agents=[rfp_compliance_agent, legal_compliance_agent, vendor_evaluation_agent, evaluation_report_agent, market_intelligence_agent, negotiation_strategy_agent],
-        selection_strategy=KernelFunctionSelectionStrategy(
-            initial_agent=rfp_compliance_agent,
-            function=selection_function,
-            kernel=kernel,
-            result_parser=lambda result: (
-                next(
-                    (agent for agent in AGENT_NAMES.values() if agent.lower() == str(result.value[0]).strip().lower()),
-                    AGENT_NAMES["evaluation_report"],
-                    )
-                ),
-            history_variable_name="lastmessage",
-            history_reducer=history_reducer,
-        ),
-        termination_strategy=KernelFunctionTerminationStrategy(
-            agents=[evaluation_report_agent],
-            function=termination_function,
-            kernel=kernel,
-            result_parser=lambda result: termination_keyword in str(result.value[0]).strip().lower(),
-            history_variable_name="lastmessage",
-            maximum_iterations=6,
-            history_reducer=history_reducer,
-        ),
-    )
-    return chat
+    return session, initial_messages
 
 
 # Initialize session state for chat
@@ -210,6 +70,249 @@ if "chat" not in st.session_state:
     st.session_state.chat = None
 if "responses" not in st.session_state:
     st.session_state.responses = []
+if "bootstrap_loaded" not in st.session_state:
+    st.session_state.bootstrap_loaded = False
+if "welcome_displayed" not in st.session_state:
+    st.session_state.welcome_displayed = False
+if "chat_selected_vendor_index" not in st.session_state:
+    st.session_state.chat_selected_vendor_index = 0
+if "vendor_agent_reports" not in st.session_state:
+    st.session_state.vendor_agent_reports = []
+if "vendor_comparison_summary" not in st.session_state:
+    st.session_state.vendor_comparison_summary = None
+if "vendor_comparison_structured" not in st.session_state:
+    st.session_state.vendor_comparison_structured = None
+if "vendor_runtime_contexts" not in st.session_state:
+    st.session_state.vendor_runtime_contexts = []
+
+vendor_entries = st.session_state.get("vendor_summaries", [])
+if not vendor_entries:
+    fallback_vendor_entries = st.session_state.get("vendor_summary_ready")
+    if isinstance(fallback_vendor_entries, list):
+        vendor_entries = fallback_vendor_entries
+
+if not vendor_entries:
+    st.error("Vendor summaries are unavailable. Please rerun the analysis from the home page.")
+    sleep(2)
+    st.switch_page("main.py")
+
+selected_vendor_index = st.session_state.get("chat_selected_vendor_index", 0)
+if vendor_entries:
+    selected_vendor_index = max(0, min(selected_vendor_index, len(vendor_entries) - 1))
+    st.session_state.chat_selected_vendor_index = selected_vendor_index
+
+def _determine_vendor_label(entry, idx: int) -> str:
+    summary_block = entry.get("summary", {}) if isinstance(entry, dict) else {}
+    vendor_name = ""
+    if isinstance(summary_block, dict):
+        vendor_name = summary_block.get("vendor_name", "")
+    file_name = entry.get("file_name") if isinstance(entry, dict) else None
+    if vendor_name and vendor_name.lower() not in {"", "not specified"}:
+        return vendor_name
+    if file_name:
+        return file_name
+    return f"Vendor {idx + 1}"
+
+
+vendor_display_names = [_determine_vendor_label(entry, idx) for idx, entry in enumerate(vendor_entries)]
+
+
+async def ensure_vendor_context(vendor_index: int) -> tuple[VendorContext, str]:
+    cached_contexts: list[dict[str, object] | None] = st.session_state.get("vendor_runtime_contexts", [])
+    if vendor_index < len(cached_contexts):
+        cached_entry = cached_contexts[vendor_index]
+        if isinstance(cached_entry, dict):
+            context = cached_entry.get("context")
+            label = cached_entry.get("vendor_label")
+            if isinstance(context, VendorContext) and isinstance(label, str):
+                return context, label
+
+    selected_record = vendor_entries[vendor_index] if vendor_entries else {}
+    proposal_summary = selected_record.get("summary", {}) if isinstance(selected_record, dict) else {}
+    proposal_summary_payload: Mapping[str, str] | str
+    if isinstance(proposal_summary, dict):
+        proposal_summary_payload = proposal_summary
+    else:
+        proposal_summary_payload = str(proposal_summary)
+
+    vendor_label = vendor_display_names[vendor_index] if vendor_index < len(vendor_display_names) else f"Vendor {vendor_index + 1}"
+    rfp_summary = st.session_state.get("rfp_summary_ready", "")
+
+    azure_endpoint = os.environ.get("AZURE_AI_SEARCH_ENDPOINT")
+    azure_api_key = os.environ.get("AZURE_AI_SEARCH_API_KEY")
+
+    policy_context = "Azure AI Search legal policy index is not configured."
+    if azure_endpoint and azure_api_key and legal_policy_index:
+        legal_search_client = SearchClient(
+            endpoint=azure_endpoint,
+            index_name=legal_policy_index,
+            credential=AzureKeyCredential(azure_api_key),
+        )
+        legal_compliance_plugin = LegalCompliancePlugin(
+            search_client=legal_search_client,
+            vendor_legal_summary=(proposal_summary_payload.get("legal_summary", "") if isinstance(proposal_summary_payload, Mapping) else ""),
+        )
+        policy_context = await legal_compliance_plugin.check_compliance()
+
+    vendor_insights = "Azure AI Search supplier insights index is not configured."
+    if azure_endpoint and azure_api_key and supplier_insights_index:
+        vendor_search_client = SearchClient(
+            endpoint=azure_endpoint,
+            index_name=supplier_insights_index,
+            credential=AzureKeyCredential(azure_api_key),
+        )
+        vendor_evaluation_plugin = VendorEvaluationPlugin(
+            search_client=vendor_search_client,
+            vendor_name=
+            (
+                (proposal_summary_payload.get("vendor_name") if isinstance(proposal_summary_payload, Mapping) else None)
+                or vendor_label
+                or "Unknown Vendor"
+            ),
+        )
+        vendor_insights = await vendor_evaluation_plugin.get_vendor_insights()
+
+    market_intelligence_plugin = MarketIntelligencePlugin(MARKET_INTELLIGENCE_DATASET)
+    market_insights = market_intelligence_plugin.get_market_insights("Cloud Computing")
+
+    context = VendorContext(
+        rfp_summary=rfp_summary,
+        proposal_summary=proposal_summary_payload,
+        policy_context=policy_context,
+        vendor_insights=vendor_insights,
+        market_insights=market_insights,
+    )
+
+    while len(cached_contexts) <= vendor_index:
+        cached_contexts.append(None)
+    cached_contexts[vendor_index] = {"context": context, "vendor_label": vendor_label}
+    st.session_state.vendor_runtime_contexts = cached_contexts
+
+    return context, vendor_label
+
+
+async def build_session_for_vendor(
+    vendor_index: int,
+    *,
+    stream_handler: Callable[[str, str], None] | None = None,
+) -> tuple[AgentFrameworkSession, list[dict[str, str]], str]:
+    prompt_instructions = get_agent_prompts()
+    context, vendor_display_name = await ensure_vendor_context(vendor_index)
+
+    session = AgentFrameworkSession(
+        agent_prompts=prompt_instructions,
+        rfp_summary=context.rfp_summary,
+        proposal_summary=context.proposal_summary,
+        policy_context=context.policy_context,
+        vendor_insights=context.vendor_insights,
+        market_insights=context.market_insights,
+    )
+
+    initial_messages = await session.bootstrap(stream_handler=stream_handler)
+    return session, initial_messages, vendor_display_name
+
+
+async def generate_comparison_summary(reports: list[dict[str, object]]) -> str | None:
+    if not reports:
+        return None
+
+    chat_client = create_chat_client(model_variant="gpt5")
+    reasoning_options = get_reasoning_options("gpt5")
+    system_prompt = (
+        "You are an expert procurement analyst. Compare multiple vendor proposals using the agent outputs. "
+        "Synthesize key strengths, risks, and compliance findings, rank the vendors, and recommend the best fit."
+    )
+
+    vendor_sections: list[str] = []
+    for report in reports:
+        vendor_label = report.get("vendor_label", "Unknown Vendor")
+        agent_outputs = report.get("agent_outputs", {})
+        section_lines = [f"Vendor: {vendor_label}"]
+        if isinstance(agent_outputs, dict):
+            for agent_name, summary in agent_outputs.items():
+                section_lines.append(f"{agent_name}:")
+                section_lines.append(str(summary))
+        vendor_sections.append("\n".join(section_lines))
+
+    comparison_prompt = (
+        "\n\n---\n\n".join(vendor_sections)
+        + "\n\nProvide a ranked comparison, highlight differentiators, identify risks, and conclude with a clear recommendation."
+    )
+
+    messages = [
+        ChatMessage(role="system", contents=[TextContent(text=system_prompt)]),
+        ChatMessage(role="user", contents=[TextContent(text=comparison_prompt)]),
+    ]
+
+    response = await chat_client.get_response(
+        messages=messages,
+        additional_properties=reasoning_options,
+    )
+    return response.text if response and getattr(response, "text", None) else None
+
+
+async def perform_multi_vendor_analysis() -> None:
+    if not vendor_entries:
+        return
+
+    prompt_instructions = get_agent_prompts()
+    contexts: list[tuple[VendorContext, str]] = []
+    for idx in range(len(vendor_entries)):
+        contexts.append(await ensure_vendor_context(idx))
+
+    workflow_tasks: list[asyncio.Task[VendorWorkflowResult]] = []
+    for idx, (context, vendor_label) in enumerate(contexts):
+        workflow, seed_messages = build_vendor_workflow(
+            agent_prompts=prompt_instructions,
+            vendor_label=vendor_label,
+            context=context,
+        )
+        workflow_tasks.append(
+            asyncio.create_task(
+                run_vendor_workflow(
+                    workflow,
+                    seed_messages,
+                    vendor_label=vendor_label,
+                )
+            )
+        )
+
+    vendor_results = await asyncio.gather(*workflow_tasks)
+
+    reports: list[dict[str, object]] = [
+        {
+            "vendor_index": idx,
+            "vendor_label": result.vendor_label,
+            "agent_outputs": result.agent_outputs,
+        }
+        for idx, result in enumerate(vendor_results)
+    ]
+
+    comparison_summary = await generate_comparison_summary(reports)
+
+    st.session_state.vendor_agent_reports = reports
+    st.session_state.vendor_comparison_summary = comparison_summary
+    st.session_state.vendor_comparison_structured = {
+        "vendors": [
+            {
+                "vendor_label": result.vendor_label,
+                "agent_outputs": result.agent_outputs,
+            }
+            for result in vendor_results
+        ]
+    }
+
+
+if (
+    vendor_entries
+    and st.session_state.get("vendor_summary_ready")
+    and not st.session_state.get("vendor_agent_reports")
+):
+    try:
+        with st.spinner("Running multi-vendor agent analysis..."):
+            asyncio.run(perform_multi_vendor_analysis())
+    except Exception as exc:
+        st.error(f"Multi-vendor analysis failed: {exc}")
 
 
 st.markdown("""
@@ -228,6 +331,7 @@ st.markdown("""
 container = st.container(border=True)
 
 with st.sidebar:
+    render_global_settings()
     selected = option_menu(
         menu_title="Microsoft",
         options=["chat", "Summaries", "About"],
@@ -235,20 +339,86 @@ with st.sidebar:
         menu_icon="microsoft",
         default_index=0,
     )
+    if vendor_entries:
+        chosen_idx = st.selectbox(
+            "Analyzing Vendor",
+            options=list(range(len(vendor_entries))),
+            format_func=lambda idx: vendor_display_names[idx],
+            index=st.session_state.chat_selected_vendor_index,
+            key="sidebar_vendor_select",
+        )
+        if chosen_idx != st.session_state.chat_selected_vendor_index:
+            st.session_state.chat_selected_vendor_index = chosen_idx
+            st.session_state.chat = None
+            st.session_state.responses = []
+            st.session_state.bootstrap_loaded = False
+            st.session_state.welcome_displayed = False
+            st.rerun()
 
 
 
 if selected == "Summaries":
-    tab1, tab2 = st.tabs(["RFP", "Vendor Proposal"])
+    tab1, tab2, tab3 = st.tabs(["RFP", "Vendor Proposals", "Agent Comparison"])
     with tab1:
-        if st.session_state.rfp_summary_ready:
-            st.subheader("📄")
-            st.write(st.session_state.rfp_summary_ready)
+        rfp_summary = st.session_state.get("rfp_summary_ready")
+        if rfp_summary:
+            st.subheader("📄 RFP Summary")
+            st.write(rfp_summary)
+        else:
+            st.info("RFP summary is not available.")
 
     with tab2:
-        if st.session_state.vendor_summary_ready:
-            st.subheader("📄 ")
-            st.write(st.session_state.vendor_summary_ready)
+        if vendor_entries:
+            for idx, entry in enumerate(vendor_entries):
+                summary_block = entry.get("summary", {}) if isinstance(entry, dict) else entry
+                vendor_label = vendor_display_names[idx] if idx < len(vendor_display_names) else f"Vendor {idx + 1}"
+                st.markdown(f"### {vendor_label}")
+                if isinstance(summary_block, dict):
+                    st.markdown(f"**Vendor Name:** {summary_block.get('vendor_name', vendor_label)}")
+                    st.markdown("**Legal Summary**")
+                    st.write(summary_block.get("legal_summary", "Not specified"))
+                    st.markdown("**Overall Summary**")
+                    st.write(summary_block.get("overall_summary", "Not specified"))
+                else:
+                    st.write(summary_block)
+                if idx < len(vendor_entries) - 1:
+                    st.divider()
+        else:
+            st.info("Vendor summaries are not available.")
+
+    with tab3:
+        comparison_summary = st.session_state.get("vendor_comparison_summary")
+        reports = st.session_state.get("vendor_agent_reports", [])
+        structured_payload = st.session_state.get("vendor_comparison_structured")
+
+        if comparison_summary:
+            st.subheader("🏆 Overall Recommendation")
+            st.markdown(comparison_summary)
+
+        if structured_payload:
+            st.download_button(
+                "⬇️ Download structured comparison (JSON)",
+                data=json.dumps(structured_payload, indent=2),
+                file_name="vendor-comparison.json",
+                mime="application/json",
+                use_container_width=False,
+            )
+
+        if reports:
+            st.markdown("### Per-Vendor Agent Highlights")
+            for report in reports:
+                vendor_label = report.get("vendor_label", "Unknown Vendor")
+                agent_outputs = report.get("agent_outputs", {})
+                with st.expander(vendor_label):
+                    if isinstance(agent_outputs, dict):
+                        for agent_name, summary in agent_outputs.items():
+                            display_name = agent_name if isinstance(agent_name, str) else str(agent_name)
+                            st.markdown(f"**{display_name}**")
+                            st.write(summary)
+                    else:
+                        st.write(agent_outputs)
+        else:
+            st.info("Run the analysis to populate vendor comparisons.")
 
 # Define agent logos (ensures correct representation)
 AGENT_LOGOS = {
@@ -262,17 +432,10 @@ AGENT_LOGOS = {
 
 USER_LOGO = "https://cdn.pixabay.com/photo/2016/03/31/17/33/avatar-1293744_1280.png"
 SYSTEM_LOGO = "https://cdn.pixabay.com/photo/2016/03/31/18/43/gear-1294576_1280.png"
-image_path3 = os.path.join(os.path.dirname(__file__), "..", "static", "image3.png")
+image_path3 = os.path.join(os.path.dirname(__file__), "..", "static", "image3.jpg")
 
 # Welcome message variable
 WELCOME_MESSAGE = "Hello! Welcome to the Group Agent Chat System. Feel free to ask any questions and our agents will respond!"
-
-# Function to simulate typewriter effect with a delay
-def slow_stream(content, delay=0.05):
-    """Streams content one character at a time with a delay."""
-    for char in content:
-        yield char
-        time.sleep(delay)  # Adds delay to slow down streaming
 
 lang_code = "en-US"
 if selected == "chat":
@@ -282,30 +445,70 @@ if selected == "chat":
     with col2:
         st.title("Agent Group Chat")
         st.markdown('''''')
+        current_vendor_label = (
+            vendor_display_names[selected_vendor_index]
+            if selected_vendor_index < len(vendor_display_names)
+            else f"Vendor {selected_vendor_index + 1}"
+        )
+        st.caption(f"Analyzing proposal from: **{current_vendor_label}**")
+        comparison_summary = st.session_state.get("vendor_comparison_summary")
+        if comparison_summary:
+            with st.expander("📊 View multi-vendor recommendation", expanded=False):
+                st.markdown(comparison_summary)
     
-    if st.session_state.chat is None:
-        st.session_state.chat = asyncio.run(initialize_chat())
+    just_bootstrapped = False
 
-    # Show welcome message if no previous messages
-    if "responses" not in st.session_state or not st.session_state.responses:
-        with st.chat_message("assistant", avatar=SYSTEM_LOGO):  # Avatar can be changed
-            st.markdown(f"**System:**")  
+    if st.session_state.chat is None:
+        bootstrap_stream_context: dict[str, dict[str, object]] = {}
+
+        def bootstrap_stream_handler(agent_name: str, chunk: str) -> None:
+            if not chunk:
+                return
+
+            context = bootstrap_stream_context.get(agent_name)
+            if context is None:
+                agent_logo = AGENT_LOGOS.get(agent_name, "🤖")
+                message_container = st.chat_message("assistant", avatar=agent_logo)
+                placeholder = message_container.empty()
+                header = f"**{agent_name} Agent:**\n\n"
+                placeholder.markdown(header)
+                context = {"placeholder": placeholder, "buffer": header}
+                bootstrap_stream_context[agent_name] = context
+
+            context = bootstrap_stream_context[agent_name]
+            context["buffer"] += chunk
+            placeholder = context["placeholder"]
+            if hasattr(placeholder, "markdown"):
+                placeholder.markdown(context["buffer"])
+
+        session, initial_messages = asyncio.run(initialize_chat(stream_handler=bootstrap_stream_handler))
+        st.session_state.chat = session
+        if not st.session_state.bootstrap_loaded:
+            st.session_state.responses.extend(initial_messages)
+            st.session_state.bootstrap_loaded = True
+            just_bootstrapped = True
+
+    if not st.session_state.welcome_displayed:
+        with st.chat_message("assistant", avatar=SYSTEM_LOGO):
+            st.markdown("**System:**")
             st.markdown(WELCOME_MESSAGE)
+        st.session_state.welcome_displayed = True
 
     # Display previous responses with correct emoji mapping
-    for response in st.session_state.get("responses", []):
-        role = response["role"]
-        content = response["content"]
+    if not just_bootstrapped:
+        for response in st.session_state.get("responses", []):
+            role = response["role"]
+            content = response["content"]
 
-        if role == "user":
-            with st.chat_message("user", avatar=USER_LOGO):
-                st.markdown(f"**You:**")  
-                st.markdown(content)
-        else:
-            agent_logo = AGENT_LOGOS.get(role, "🤖")  
-            with st.chat_message("assistant", avatar=agent_logo):
-                st.markdown(f"**{role} Agent:**")  
-                st.markdown(content)
+            if role == "user":
+                with st.chat_message("user", avatar=USER_LOGO):
+                    st.markdown("**You:**")  
+                    st.markdown(content)
+            else:
+                agent_logo = AGENT_LOGOS.get(role, "🤖")  
+                with st.chat_message("assistant", avatar=agent_logo):
+                    st.markdown(f"**{role} Agent:**")  
+                    st.markdown(content)
 
     # Handle new user input
     prompt = st.chat_input("Enter your message:", key="chat_input")      
@@ -313,26 +516,48 @@ if selected == "chat":
     if prompt:
         # Display the new user message with the correct format
         with st.chat_message("user", avatar=USER_LOGO):
-            st.markdown(f"**You:**")
+            st.markdown("**You:**")
             st.markdown(prompt)
 
-        # Append new user message correctly to session history
         st.session_state.responses.append({"role": "user", "content": prompt})
-        asyncio.run(st.session_state.chat.add_chat_message(message=prompt))
 
-        # Stream responses one by one using st.write_stream
-        async def stream_agent_responses():
-            async for response in st.session_state.chat.invoke():
-                if response and response.name:
-                    agent_name = response.name.strip()  
-                    agent_logo = AGENT_LOGOS.get(agent_name, "🤖")  
+        stream_context: dict[str, dict[str, object]] = {}
+        streamed_content: dict[str, str] = {}
 
-                    with st.chat_message("assistant", avatar=agent_logo):
-                        st.markdown(f"**{agent_name} Agent:**")  
-                        st.write_stream(slow_stream(response.content, delay=0.005))  
+        def stream_handler(agent_name: str, chunk: str) -> None:
+            if not chunk:
+                return
 
-                    st.session_state.responses.append({"role": response.name, "content": response.content})
+            context = stream_context.get(agent_name)
+            if context is None:
+                agent_logo = AGENT_LOGOS.get(agent_name, "🤖")
+                message_container = st.chat_message("assistant", avatar=agent_logo)
+                placeholder = message_container.empty()
+                header = f"**{agent_name} Agent:**\n\n"
+                placeholder.markdown(header)
+                context = {"placeholder": placeholder, "buffer": header}
+                stream_context[agent_name] = context
+                streamed_content[agent_name] = ""
 
-        asyncio.run(stream_agent_responses())
-        st.session_state.chat_process_running = False  # Reset the flag after processing
+            context = stream_context[agent_name]
+            context["buffer"] += chunk
+            context_placeholder = context["placeholder"]
+            if hasattr(context_placeholder, "markdown"):
+                context_placeholder.markdown(context["buffer"])
+            streamed_content[agent_name] = streamed_content.get(agent_name, "") + chunk
+
+        agent_responses = asyncio.run(
+            st.session_state.chat.handle_user_prompt_streaming(
+                prompt,
+                stream_handler=stream_handler,
+            )
+        )
+
+        for agent_name, agent_text in agent_responses:
+            if not agent_text:
+                agent_text = streamed_content.get(agent_name, "")
+            if not agent_text:
+                continue
+            st.session_state.responses.append({"role": agent_name, "content": agent_text})
+
         st.rerun()

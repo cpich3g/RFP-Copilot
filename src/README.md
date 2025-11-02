@@ -1,0 +1,36 @@
+# Streamlit Experience
+
+The Streamlit front end exposes three primary workspaces from the navigation pane:
+
+1. **Bid Comparison Intelligence** (`pages/1_Bid_Comparison.py`)
+   - Upload one or more supplier bid files (CSV/XLSX/JSON).
+   - Optionally upload an RFP anchor file to seed target prices or SLA thresholds.
+   - Adjust weighting sliders to prioritise price, quality, compliance, sustainability, and more.
+   - Inspect the normalised comparison table, Plotly score visualisations, and agent-generated summary.
+   - Explore alternative scenarios in the What-if Sandbox; every run is logged for later export.
+   - Download a bundled ZIP containing Markdown, PDF, and CSV artefacts.
+
+2. **Negotiation Strategy Copilot** (`pages/2_Negotiation_Strategy.py`)
+   - Select a supplier from history or upload a JSON profile describing capabilities and prior lessons.
+   - Pull stubbed market benchmarks (replace with a live integration when ready).
+   - Capture objectives and constraints (target price, SLA, warranty, penalties, and more).
+   - Generate an AI pre-brief leveraging Microsoft Agent Framework for synthesised insights.
+   - Run a live negotiation copilot with chat-style updates and optional voice capture via WebRTC.
+   - Log outcomes, concessions, and lessons learned to evolve future strategies.
+
+3. **Multi-Agent Analysis Chat** (`pages/chat.py`)
+   - Continues to provide the orchestrated multi-agent conversation driven by summarised RFP/proposal insights.
+   - Automatically evaluates every uploaded vendor proposal, captures each agent’s findings, and produces a ranked comparison with a recommended winner.
+   - Agent replies now stream into the chat UI so analysts can follow reasoning in real time.
+
+## Azure OpenAI Authentication
+
+By default the application now authenticates to Azure OpenAI using `DefaultAzureCredential`, which enables Managed Identity or Azure CLI sign-ins without storing secrets. If a token cannot be acquired, the app automatically falls back to `AZURE_OPENAI_API_KEY` (when provided). To force API-key based authentication in all cases, set `AZURE_OPENAI_AUTH_MODE=api_key` alongside `AZURE_OPENAI_API_KEY`.
+
+## Settings Drawer
+
+All pages share a consistent drawer on the left-hand sidebar for global settings (LLM provider, telemetry, theme). Page-specific toggles (for example, outlier handling in bid comparison and voice enablement during negotiation) live beneath the shared controls.
+
+## Voice Capture
+
+When enabled on the negotiation page, a `streamlit-webrtc` session captures audio in push-to-talk mode. Integrate Azure Cognitive Services Speech (credentials already supported by `requirements.txt`) to transform captured audio into text and append it to the live transcript.

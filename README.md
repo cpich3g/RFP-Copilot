@@ -1,4 +1,4 @@
-# 🤖 AI-Powered RFP Analyzer: An Azure-Based Multi-Agent Accelerator for RFP & Proposal Evaluation Using Semantic Kernel
+# 🤖 AI-Powered RFP Analyzer: An Azure-Based Multi-Agent Accelerator for RFP & Proposal Evaluation Using Microsoft Agent Framework
 
 A turnkey, multi-agent solution accelerator for automating the evaluation of RFPs/RFTs and Vendor/Supplier Proposals. This accelerator helps procurement teams reduce manual effort, ensure compliance, analyze vendor capabilities, and generate strategic negotiation recommendations—delivered as a structured, final evaluation report ; all deployed in your Azure tenant in under an hour.
 
@@ -19,7 +19,7 @@ A turnkey, multi-agent solution accelerator for automating the evaluation of RFP
 
 ## ✨ Features
 
-The **AI-Powered RFP Analyzer** combines modular AI agents, LLM orchestration with Semantic Kernel Agent Framework, and vector-based reasoning to deliver a complete procurement intelligence system. Each feature corresponds to a specialized agent that independently analyzes vendor/supplier proposals and contributes to a unified evaluation.
+The **AI-Powered RFP Analyzer** combines modular AI agents, LLM orchestration with the Microsoft Agent Framework, and vector-based reasoning to deliver a complete procurement intelligence system. Each feature corresponds to a specialized agent that independently analyzes vendor/supplier proposals and contributes to a unified evaluation.
 
 ---
 
@@ -77,6 +77,25 @@ Consolidate all agent outputs into a clear, concise, and decision-ready report:
 
 ---
 
+### 🧮 Bid Comparison Intelligence Module *(New)*
+
+Builds on the new bid normalisation engine and agentic helpers:
+
+- Ingests heterogeneous supplier bid files (CSV/XLSX/JSON) and harmonises schema differences.
+- Normalises metrics (price, quality, compliance, lead time, sustainability, hidden costs, and more) with configurable outlier filtering and missing-data strategies.
+- Computes weighted composite scores, visualises results with Plotly charts, and highlights deltas versus optional RFP anchors.
+- Leverages a dedicated Agent Framework strategist to produce explainable ranking summaries and negotiation levers.
+- Captures what-if scenarios so procurement teams can compare alternative weighting schemes and export Markdown/PDF/CSV bundles.
+
+### 🤝 Negotiation Strategy Copilot *(New)*
+
+An end-to-end workspace for pre-brief, live guidance, and post-session learning:
+
+- Imports supplier profiles (from history or uploaded JSON) and enriches them with stubbed market benchmarks.
+- Generates AI-powered pre-briefs summarising strengths, risks, and recommended tactics using the Agent Framework.
+- Provides a live copilot chat experience with optional WebRTC voice capture, tactic palettes, and real-time counter-offer recommendations.
+- Logs outcomes, concessions, and lessons learned to build a persistent strategy memory for future negotiations.
+
 Together, these features allow procurement teams to move faster, reduce subjectivity, ensure compliance, and drive stronger vendor outcomes with confidence.
 
 ## 📐 Architecture
@@ -109,7 +128,7 @@ Together, these features allow procurement teams to move faster, reduce subjecti
    The system extracts and summarizes content from both documents using Azure Document Intelligence.
 
 3. **🤖 Multi-Agent Evaluation**  
-   The `Semantic Kernel Orchestrator` initiates an agent group chat with specialized agents:
+   The `Microsoft Agent Framework Orchestrator` initiates an agent conversation with specialized agents:
    - **RFP Compliance Agent**: Compares the proposal against RFP requirements.
    - **Legal Compliance Agent**: Identifies legal and regulatory risks.
    - **Vendor Evaluation Agent**: Assesses vendor reputation, stability, and performance.
@@ -129,7 +148,7 @@ Together, these features allow procurement teams to move faster, reduce subjecti
 - **Deployment Target**: Azure Container Apps  
 - **Source Code**: Located in `/src` folder  
 - **Image Registry**: Azure Container Registry  
-- **Multi-Agent Orchestration**: Semantic Kernel
+- **Multi-Agent Orchestration**: Microsoft Agent Framework
 - **LLM Integration**: Azure OpenAI
 - **Document Parsing**: Azure Document Intelligence  
 - **Search/Indexing**: Azure AI Search (Vector + Semantic)
@@ -155,25 +174,17 @@ The Bicep templates provision the following Azure resources:
 Environment variables are used to configure service connections and runtime behavior. These are typically managed by AZD and include:
 
 - `AZURE_OPENAI_ENDPOINT`
-- `AZURE_OPENAI_KEY`
-- `AZURE_SEARCH_SERVICE_NAME`
-- `AZURE_STORAGE_ACCOUNT`
-- `AZURE_FORM_RECOGNIZER_ENDPOINT`
+- `AZURE_OPENAI_API_KEY` *(leave empty to authenticate with Azure AD via DefaultAzureCredential)*
+- `AZURE_AI_SEARCH_ENDPOINT`
+- `AZURE_AI_SEARCH_API_KEY`
+- `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+- `AZURE_DOC_INTELLIGENCE_KEY`
+- `AZURE_SPEECH_KEY` *(optional, required for voice transcription)*
+- `AZURE_SPEECH_REGION` *(optional, required for voice transcription)*
 
 You can set or review these in `.env` or via the `azd env` commands.
 
 ---
-
-## 🚀 Step-by-Step Deployment
-
-Follow these steps to deploy the solution using AZD:
-
-### 1. Prerequisites
-
-- [Azure Developer CLI (AZD)](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
-- The accelerator expects two vector-indexes created on Azure AI Search to facilitate the run of *Legal Compliance Agent* and *Vendor Evaluation Agent*, named *legal-policy-index* and *supplier-insights-index* respectively. Please customize and create them per your use-case data or use the sample documents available under src/documents/sample-docs/index-creation.
 
 ## 🚀 Step-by-Step Deployment
 
