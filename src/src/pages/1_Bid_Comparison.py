@@ -90,7 +90,7 @@ def _render_supplier_scores(scores):
     fig = px.bar(score_df, x="Supplier", y="Composite Score", color="Supplier", text="Composite Score")
     fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
     fig.update_layout(yaxis_range=[0, 1.05])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     metrics_df = pd.DataFrame(
         [
@@ -112,7 +112,7 @@ def _render_supplier_scores(scores):
                 range_r=[0, 1],
                 title=f"Normalized Scores — {supplier}",
             )
-            st.plotly_chart(fig_radar, use_container_width=True)
+            st.plotly_chart(fig_radar, width="stretch")
 
 
 def _render_variation_panel(deltas: List[str], scores) -> None:
@@ -148,7 +148,7 @@ def _render_supplier_insights(scores) -> None:
                         "Normalized": [round(score.normalized_metrics.get(metric, 0), 2) for metric in score.metrics.keys()],
                     }
                 )
-                st.dataframe(metrics_df.set_index("Metric"), use_container_width=True)
+                st.dataframe(metrics_df.set_index("Metric"), width="stretch")
             with col_flags:
                 st.markdown("**Risk Flags**")
                 if score.risk_flags:
@@ -212,7 +212,7 @@ def _render_what_if(engine: BidComparisonEngine, baseline_scores: Dict[str, floa
                 .style.background_gradient(subset=["Δ Score"], cmap="PiYG")
                 .hide(axis="index")
             )
-            st.dataframe(styled, use_container_width=True)
+            st.dataframe(styled, width="stretch")
             st.caption("Positive deltas indicate suppliers gaining under the new weighting mix.")
             top_movers = scenario_df.sort_values("score_delta", ascending=False)
             st.markdown("**Diff Highlights**")
@@ -243,7 +243,7 @@ def _render_multi_vendor_inputs(settings: Dict[str, str]):
     if rfp_anchor:
         st.success("RFP anchors loaded. We'll benchmark bids against them.")
 
-    if st.button("Analyze Bids", type="primary", use_container_width=True):
+    if st.button("Analyze Bids", type="primary", width="stretch"):
         try:
             weight_config = WeightingConfig(weight_overrides)
             engine = BidComparisonEngine(
@@ -281,7 +281,7 @@ def _render_multi_vendor_outputs():
     st.markdown("## Normalized Comparison Table")
     st.dataframe(
         result.normalized_table.reset_index(drop=True),
-        use_container_width=True,
+        width="stretch",
         height=420,
     )
 
@@ -324,7 +324,7 @@ def _render_multi_rfp_inputs(settings: Dict[str, str]):
     )
     weight_overrides = render_weight_editor(st.session_state.get("bid_weights_override"), key_prefix="primary_weight")
 
-    if st.button("Analyze RFP Scenarios", type="primary", use_container_width=True):
+    if st.button("Analyze RFP Scenarios", type="primary", width="stretch"):
         if not vendor_file:
             st.error("Upload a vendor proposal file first.")
             return
@@ -360,7 +360,7 @@ def _render_multi_rfp_outputs():
     st.markdown("## RFP Scenario Performance")
     st.dataframe(
         result.scenario_table.reset_index(drop=True),
-        use_container_width=True,
+        width="stretch",
         height=420,
     )
 
@@ -377,7 +377,7 @@ def _render_multi_rfp_outputs():
     fig = px.bar(scenario_df, x="RFP Scenario", y="Composite Score", color="RFP Scenario", text="Composite Score")
     fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
     fig.update_layout(yaxis_range=[0, 1.05], showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     st.markdown("### Variation & Fit Insights")
     if result.variation_notes:

@@ -29,10 +29,9 @@ _MODEL_VARIANTS: Dict[str, Dict[str, Any]] = {
         "reasoning_effort": os.environ.get("AZURE_OPENAI_GPT5_MINI_REASONING_EFFORT", "medium"),
         "service_tier": os.environ.get("AZURE_OPENAI_GPT5_MINI_SERVICE_TIER"),
     },
-    "gpt5": {
-        "deployment_env": "AZURE_OPENAI_GPT5_DEPLOYMENT_NAME",
-        "reasoning_effort": os.environ.get("AZURE_OPENAI_GPT5_REASONING_EFFORT", "high"),
-        "service_tier": os.environ.get("AZURE_OPENAI_GPT5_SERVICE_TIER", "priority"),
+    "gpt4-1": {
+        "deployment_env": "AZURE_OPENAI_GPT4_1_DEPLOYMENT_NAME",
+        "service_tier": os.environ.get("AZURE_OPENAI_GPT4_1_SERVICE_TIER", "priority"),
     },
 }
 

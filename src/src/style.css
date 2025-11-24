@@ -1,4 +1,3 @@
-
 .st-key-chat_input{
     border-radius: 25px;
     border: 2px solid rgb(26, 102, 225);
@@ -19,5 +18,24 @@
     ;
     
     
+}
+
+/* Analyze Button Hover */
+.st-key-analyze_button button {
+    transition: all 0.3s ease-in-out;
+}
+
+.st-key-analyze_button button:hover {
+    box-shadow: 0 0 20px #166ec5;
+    transform: scale(1.05); /* Reduced scale to be less aggressive */
+}
+
+/* Center content in specific containers if needed - generic helper */
+.centered-content {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    width: 100%;
 }
 

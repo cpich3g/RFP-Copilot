@@ -16,11 +16,11 @@ from streamlit_option_menu import option_menu
 
 from agent_framework_session import AgentFrameworkSession
 from agent_framework import ChatMessage, TextContent
-from rfp_agents import VendorContext
-from workflows.vendor_workflow import build_vendor_workflow, run_vendor_workflow, VendorWorkflowResult
+from rfp_agents import INITIAL_SEQUENCE_ORDER, VendorContext
+from workflows.vendor_workflow import run_full_vendor_process, VendorWorkflowResult
 
 # Application-specific imports
-from app import create_chat_client, get_agent_prompts, get_reasoning_options
+from app import AGENT_NAMES, create_chat_client, get_agent_prompts, get_reasoning_options
 from plugins.legal_compliance_plugin import LegalCompliancePlugin
 from plugins.vendor_evaluation_plugin import VendorEvaluationPlugin
 from plugins.market_intelligence_plugin import MarketIntelligencePlugin
@@ -115,6 +115,35 @@ def _determine_vendor_label(entry, idx: int) -> str:
 
 
 vendor_display_names = [_determine_vendor_label(entry, idx) for idx, entry in enumerate(vendor_entries)]
+
+
+# Define agent metadata for consistent styling and labeling
+AGENT_LOGOS = {
+    AGENT_NAMES["rfp_compliance"]: "📜",
+    AGENT_NAMES["legal_compliance"]: "⚖️",
+    AGENT_NAMES["vendor_evaluation"]: "🏢",
+    AGENT_NAMES["market_intelligence"]: "📊",
+    AGENT_NAMES["negotiation_strategy"]: "🤝",
+    AGENT_NAMES["evaluation_report"]: "📑",
+}
+
+BRAND_NAME = "Sobha Realty"
+
+AGENT_DISPLAY_NAMES = {
+    AGENT_NAMES["rfp_compliance"]: "RFP Compliance",
+    AGENT_NAMES["legal_compliance"]: "Legal Compliance",
+    AGENT_NAMES["vendor_evaluation"]: "Vendor Evaluation",
+    AGENT_NAMES["market_intelligence"]: "Market Intelligence",
+    AGENT_NAMES["negotiation_strategy"]: "Negotiation Strategy",
+    AGENT_NAMES["evaluation_report"]: "Evaluation Report",
+}
+
+USER_LOGO = "https://cdn.pixabay.com/photo/2016/03/31/17/33/avatar-1293744_1280.png"
+SYSTEM_LOGO = "https://cdn.pixabay.com/photo/2016/03/31/18/43/gear-1294576_1280.png"
+image_path3 = os.path.join(os.path.dirname(__file__), "..", "static", "image3.jpg")
+
+# Welcome message variable
+WELCOME_MESSAGE = "Hello! Welcome to the Group Agent Chat System. Feel free to ask any questions and our agents will respond!"
 
 
 async def ensure_vendor_context(vendor_index: int) -> tuple[VendorContext, str]:
@@ -216,8 +245,10 @@ async def generate_comparison_summary(reports: list[dict[str, object]]) -> str |
     if not reports:
         return None
 
-    chat_client = create_chat_client(model_variant="gpt5")
-    reasoning_options = get_reasoning_options("gpt5")
+    chat_client = create_chat_client(model_variant="gpt5-mini")
+    reasoning_options = get_reasoning_options("gpt5-mini")
+    chat_options = dict(reasoning_options)
+    chat_options.pop("reasoning", None)
     system_prompt = (
         "You are an expert procurement analyst. Compare multiple vendor proposals using the agent outputs. "
         "Synthesize key strengths, risks, and compliance findings, rank the vendors, and recommend the best fit."
@@ -236,7 +267,10 @@ async def generate_comparison_summary(reports: list[dict[str, object]]) -> str |
 
     comparison_prompt = (
         "\n\n---\n\n".join(vendor_sections)
-        + "\n\nProvide a ranked comparison, highlight differentiators, identify risks, and conclude with a clear recommendation."
+        + "\n\nProvide a ranked comparison of the vendors. "
+        "**You must present the comparison as a Markdown table** with columns for: "
+        "Vendor Name, Rank, Key Strengths, Key Risks, Compliance Status, and Overall Score. "
+        "After the table, provide a brief conclusion with a clear recommendation."
     )
 
     messages = [
@@ -246,7 +280,7 @@ async def generate_comparison_summary(reports: list[dict[str, object]]) -> str |
 
     response = await chat_client.get_response(
         messages=messages,
-        additional_properties=reasoning_options,
+        additional_properties=chat_options or None,
     )
     return response.text if response and getattr(response, "text", None) else None
 
@@ -262,17 +296,12 @@ async def perform_multi_vendor_analysis() -> None:
 
     workflow_tasks: list[asyncio.Task[VendorWorkflowResult]] = []
     for idx, (context, vendor_label) in enumerate(contexts):
-        workflow, seed_messages = build_vendor_workflow(
-            agent_prompts=prompt_instructions,
-            vendor_label=vendor_label,
-            context=context,
-        )
         workflow_tasks.append(
             asyncio.create_task(
-                run_vendor_workflow(
-                    workflow,
-                    seed_messages,
+                run_full_vendor_process(
+                    agent_prompts=prompt_instructions,
                     vendor_label=vendor_label,
+                    context=context,
                 )
             )
         )
@@ -315,60 +344,103 @@ if (
         st.error(f"Multi-vendor analysis failed: {exc}")
 
 
-st.markdown("""
-    <style>
-        .st-emotion-cache-13g75r2 {
-            display: flex;
-            justify-content: center;  /* Centers horizontally */
-            align-items: center;      /* Centers vertically */
-            text-align: center;
-            width: 100%;              /* Ensures it spans full width */
-            height: 100%;             /* Adjust based on parent */
-        }
-    </style>
-""", unsafe_allow_html=True)
+menu_options: list[str] = ["Bid Comparison"]
+menu_icons: list[str] = ["trophy"]
+vendor_option_map: dict[str, int] = {}
 
-container = st.container(border=True)
+for idx, _ in enumerate(vendor_display_names, start=1):
+    option_label = f"Proposal {idx} Agent Output"
+    vendor_option_map[option_label] = idx - 1
+    menu_options.append(option_label)
+    menu_icons.append("file-earmark-text")
+
+menu_options.append("Negotiation Strategy")
+menu_icons.append("hand-thumbs-up")
+menu_options.append("Chat Console")
+menu_icons.append("chat")
 
 with st.sidebar:
+    if st.button("➕ New Analysis", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.switch_page("main.py")
+    
+    st.divider()
     render_global_settings()
-    selected = option_menu(
-        menu_title="Microsoft",
-        options=["chat", "Summaries", "About"],
-        icons=["chat", "book", "info-circle"],
-        menu_icon="microsoft",
+    st.image(image_path3, width=160)
+    selected_section = option_menu(
+        menu_title=BRAND_NAME,
+        options=menu_options,
+        icons=menu_icons,
+        menu_icon="building",
         default_index=0,
+        key="chat_sidebar_menu",
     )
-    if vendor_entries:
-        chosen_idx = st.selectbox(
-            "Analyzing Vendor",
-            options=list(range(len(vendor_entries))),
-            format_func=lambda idx: vendor_display_names[idx],
-            index=st.session_state.chat_selected_vendor_index,
-            key="sidebar_vendor_select",
+
+previous_vendor_index = st.session_state.get("chat_selected_vendor_index", 0)
+active_vendor_index = previous_vendor_index
+if selected_section in vendor_option_map:
+    active_vendor_index = vendor_option_map[selected_section]
+
+if vendor_entries:
+    active_vendor_index = max(0, min(active_vendor_index, len(vendor_entries) - 1))
+else:
+    active_vendor_index = 0
+
+if active_vendor_index != previous_vendor_index:
+    st.session_state.chat_selected_vendor_index = active_vendor_index
+    st.session_state.chat = None
+    st.session_state.responses = []
+    st.session_state.bootstrap_loaded = False
+    st.session_state.welcome_displayed = False
+
+selected_vendor_index = st.session_state.get("chat_selected_vendor_index", active_vendor_index)
+
+
+
+if selected_section == "Bid Comparison":
+    st.header("🏆 Multi-Vendor Comparison")
+    comparison_summary = st.session_state.get("vendor_comparison_summary")
+    reports = st.session_state.get("vendor_agent_reports", [])
+    structured_payload = st.session_state.get("vendor_comparison_structured")
+
+    if comparison_summary:
+        st.markdown(comparison_summary)
+    else:
+        st.info("Run the analysis from the home page to see the consolidated comparison.")
+
+    if structured_payload:
+        st.download_button(
+            "⬇️ Download structured comparison (JSON)",
+            data=json.dumps(structured_payload, indent=2),
+            file_name="vendor-comparison.json",
+            mime="application/json",
+            width="content",
         )
-        if chosen_idx != st.session_state.chat_selected_vendor_index:
-            st.session_state.chat_selected_vendor_index = chosen_idx
-            st.session_state.chat = None
-            st.session_state.responses = []
-            st.session_state.bootstrap_loaded = False
-            st.session_state.welcome_displayed = False
-            st.rerun()
 
+    if reports:
+        st.markdown("### Per-Vendor Agent Highlights")
+        for report in reports:
+            vendor_label = report.get("vendor_label", "Unknown Vendor")
+            agent_outputs = report.get("agent_outputs", {})
+            with st.expander(vendor_label, expanded=False):
+                if isinstance(agent_outputs, dict):
+                    for agent_name, summary in agent_outputs.items():
+                        display_name = agent_name if isinstance(agent_name, str) else str(agent_name)
+                        st.markdown(f"**{display_name}**")
+                        st.write(summary)
+                else:
+                    st.write(agent_outputs)
 
+    st.divider()
 
-if selected == "Summaries":
-    tab1, tab2, tab3 = st.tabs(["RFP", "Vendor Proposals", "Agent Comparison"])
-    with tab1:
-        rfp_summary = st.session_state.get("rfp_summary_ready")
-        if rfp_summary:
-            st.subheader("📄 RFP Summary")
+    rfp_summary = st.session_state.get("rfp_summary_ready")
+    if rfp_summary:
+        with st.expander("📄 View RFP Summary", expanded=False):
             st.write(rfp_summary)
-        else:
-            st.info("RFP summary is not available.")
 
-    with tab2:
-        if vendor_entries:
+    if vendor_entries:
+        with st.expander("📑 View Vendor Proposal Summaries", expanded=False):
             for idx, entry in enumerate(vendor_entries):
                 summary_block = entry.get("summary", {}) if isinstance(entry, dict) else entry
                 vendor_label = vendor_display_names[idx] if idx < len(vendor_display_names) else f"Vendor {idx + 1}"
@@ -383,74 +455,110 @@ if selected == "Summaries":
                     st.write(summary_block)
                 if idx < len(vendor_entries) - 1:
                     st.divider()
-        else:
-            st.info("Vendor summaries are not available.")
 
-    with tab3:
-        comparison_summary = st.session_state.get("vendor_comparison_summary")
-        reports = st.session_state.get("vendor_agent_reports", [])
-        structured_payload = st.session_state.get("vendor_comparison_structured")
+elif selected_section in vendor_option_map:
+    vendor_index = vendor_option_map[selected_section]
+    vendor_label = vendor_display_names[vendor_index] if vendor_index < len(vendor_display_names) else f"Vendor {vendor_index + 1}"
+    st.header(f"📄 {vendor_label} Agent Output")
 
-        if comparison_summary:
-            st.subheader("🏆 Overall Recommendation")
-            st.markdown(comparison_summary)
+    reports = st.session_state.get("vendor_agent_reports", [])
+    vendor_report = next((report for report in reports if report.get("vendor_index") == vendor_index), None)
+    if vendor_report is None and vendor_index < len(reports):
+        vendor_report = reports[vendor_index]
 
-        if structured_payload:
-            st.download_button(
-                "⬇️ Download structured comparison (JSON)",
-                data=json.dumps(structured_payload, indent=2),
-                file_name="vendor-comparison.json",
-                mime="application/json",
-                use_container_width=False,
-            )
+    if vendor_report and isinstance(vendor_report, dict):
+        agent_outputs = vendor_report.get("agent_outputs", {}) or {}
+        export_payload = {
+            "vendor_label": vendor_label,
+            "agent_outputs": agent_outputs,
+        }
+        st.download_button(
+            label="⬇️ Download agent outputs (JSON)",
+            data=json.dumps(export_payload, indent=2),
+            file_name=f"proposal-{vendor_index + 1}-agents.json",
+            mime="application/json",
+            width="content",
+        )
 
-        if reports:
-            st.markdown("### Per-Vendor Agent Highlights")
-            for report in reports:
-                vendor_label = report.get("vendor_label", "Unknown Vendor")
-                agent_outputs = report.get("agent_outputs", {})
-                with st.expander(vendor_label):
-                    if isinstance(agent_outputs, dict):
-                        for agent_name, summary in agent_outputs.items():
-                            display_name = agent_name if isinstance(agent_name, str) else str(agent_name)
-                            st.markdown(f"**{display_name}**")
-                            st.write(summary)
+        proposal_entry = vendor_entries[vendor_index] if vendor_index < len(vendor_entries) else {}
+        proposal_summary = proposal_entry.get("summary", {}) if isinstance(proposal_entry, dict) else proposal_entry
+        with st.expander("📑 Proposal Summary", expanded=False):
+            if isinstance(proposal_summary, Mapping):
+                st.markdown(f"**Vendor Name:** {proposal_summary.get('vendor_name', vendor_label)}")
+                st.markdown("**Legal Summary**")
+                st.write(proposal_summary.get("legal_summary", "Not specified"))
+                st.markdown("**Overall Summary**")
+                st.write(proposal_summary.get("overall_summary", "Not specified"))
+            else:
+                st.write(proposal_summary)
+
+        st.markdown("### Agent Findings")
+        if agent_outputs:
+            for agent_name in INITIAL_SEQUENCE_ORDER:
+                display_name = AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
+                agent_text = agent_outputs.get(agent_name)
+                with st.expander(display_name, expanded=False):
+                    if agent_text:
+                        st.markdown(agent_text)
                     else:
-                        st.write(agent_outputs)
+                        st.info("No output recorded for this agent.")
         else:
-            st.info("Run the analysis to populate vendor comparisons.")
+            st.info("Agent outputs are not available for this proposal yet.")
+    else:
+        st.info("Run the analysis from the home page to generate agent outputs for this proposal.")
 
-# Define agent logos (ensures correct representation)
-AGENT_LOGOS = {
-    "RFPCompliance": "📜",  
-    "LegalCompliance": "⚖️",  
-    "VendorEvaluation": "🏢",  
-    "MarketIntelligence": "📊",  
-    "NegotiationStrategy": "🤝",  
-    "EvaluationReport": "📑"  
-}
+elif selected_section == "Negotiation Strategy":
+    st.header("🤝 Negotiation Strategy Playbook")
+    reports = st.session_state.get("vendor_agent_reports", [])
+    if not reports:
+        st.info("Run the analysis from the home page to collect negotiation guidance.")
+    else:
+        for idx, report in enumerate(reports):
+            vendor_label = report.get("vendor_label") or (
+                vendor_display_names[idx] if idx < len(vendor_display_names) else f"Vendor {idx + 1}"
+            )
+            agent_outputs = report.get("agent_outputs", {}) if isinstance(report, dict) else {}
+            negotiation_guidance = agent_outputs.get(AGENT_NAMES["negotiation_strategy"])
+            evaluation_snapshot = agent_outputs.get(AGENT_NAMES["evaluation_report"])
 
-USER_LOGO = "https://cdn.pixabay.com/photo/2016/03/31/17/33/avatar-1293744_1280.png"
-SYSTEM_LOGO = "https://cdn.pixabay.com/photo/2016/03/31/18/43/gear-1294576_1280.png"
-image_path3 = os.path.join(os.path.dirname(__file__), "..", "static", "image3.jpg")
+            with st.expander(f"{vendor_label}", expanded=(idx == 0)):
+                if negotiation_guidance:
+                    st.markdown("#### Negotiation Guidance")
+                    st.markdown(negotiation_guidance)
+                else:
+                    st.info("Negotiation strategy is not available for this vendor yet.")
 
-# Welcome message variable
-WELCOME_MESSAGE = "Hello! Welcome to the Group Agent Chat System. Feel free to ask any questions and our agents will respond!"
+                if evaluation_snapshot:
+                    st.markdown("#### Evaluation Snapshot")
+                    st.markdown(evaluation_snapshot)
 
-lang_code = "en-US"
-if selected == "chat":
+elif selected_section == "Chat Console":
     col1, col2 = st.columns([1, 8])
     with col1:
-        st.image(image_path3, use_container_width=True)  # Add your logo here
+        st.image(image_path3, width=140)
     with col2:
         st.title("Agent Group Chat")
-        st.markdown('''''')
         current_vendor_label = (
             vendor_display_names[selected_vendor_index]
             if selected_vendor_index < len(vendor_display_names)
             else f"Vendor {selected_vendor_index + 1}"
         )
         st.caption(f"Analyzing proposal from: **{current_vendor_label}**")
+        if vendor_entries:
+            chat_vendor_idx = st.selectbox(
+                "Switch vendor conversation",
+                options=list(range(len(vendor_entries))),
+                format_func=lambda idx: vendor_display_names[idx],
+                index=selected_vendor_index,
+                key="chat_vendor_switch",
+            )
+            if chat_vendor_idx != st.session_state.chat_selected_vendor_index:
+                st.session_state.chat_selected_vendor_index = chat_vendor_idx
+                st.session_state.chat = None
+                st.session_state.responses = []
+                st.session_state.bootstrap_loaded = False
+                st.session_state.welcome_displayed = False
+                st.rerun()
         comparison_summary = st.session_state.get("vendor_comparison_summary")
         if comparison_summary:
             with st.expander("📊 View multi-vendor recommendation", expanded=False):

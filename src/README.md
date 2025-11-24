@@ -34,3 +34,43 @@ All pages share a consistent drawer on the left-hand sidebar for global settings
 ## Voice Capture
 
 When enabled on the negotiation page, a `streamlit-webrtc` session captures audio in push-to-talk mode. Integrate Azure Cognitive Services Speech (credentials already supported by `requirements.txt`) to transform captured audio into text and append it to the live transcript.
+
+## Docker & GitHub Container Registry (GHCR)
+
+This project includes a Dockerfile and a GitHub Actions workflow to automatically build and publish the container image to GitHub Container Registry.
+
+### Local Docker Build
+
+To build and run the container locally:
+
+1. Navigate to the `src` directory:
+
+   ```bash
+   cd src
+   ```
+
+2. Build the image:
+
+   ```bash
+   docker build -t rfp-copilot .
+   ```
+
+3. Run the container (ensure you have a `.env` file in `src/` or pass environment variables):
+
+   ```bash
+   docker run -p 8501:8501 --env-file .env rfp-copilot
+   ```
+
+### GitHub Actions Workflow
+
+The workflow is defined in `.github/workflows/docker-publish.yml`. It triggers on:
+
+- Pushes to the `main` branch.
+- Creation of tags starting with `v*` (e.g., `v1.0.0`).
+- Pull requests to `main` (builds but does not push).
+
+To enable this:
+
+1. Ensure GitHub Actions is enabled in your repository settings.
+2. The workflow uses `GITHUB_TOKEN` to authenticate with GHCR, so no extra secrets are needed for the registry.
+3. If your `agent-framework` dependency is in a private feed, you may need to update the Dockerfile and workflow to authenticate with that feed.

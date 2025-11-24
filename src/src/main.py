@@ -1,6 +1,7 @@
 # Standard library imports
 import os
 import uuid
+import pathlib
 from time import sleep
 
 # Third-party imports
@@ -10,33 +11,14 @@ from PIL import Image
 # Local application imports
 from doc_summarization import summarize_document
 
-st.markdown("""
-    <style>
-        .st-emotion-cache-1i6lr5d img { 
-            width: 200px !important;  /* Increase the width */
-            height: auto !important;  /* Maintain aspect ratio */
-        }
-        .st-emotion-cache-180ybpv {
-            width: 200px !important;  /* Increase the width */
-            height: auto !important;  /* Maintain aspect ratio */
-    </style>
-""", unsafe_allow_html=True)
+# Function to load CSS styles from a file
+def load_css(file_path):
+    with open(file_path, encoding="utf-8") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# Analyze Button styling
-st.markdown("""
-<style>
-/* Analyze Button Hover */
-.st-key-analyze_button button {
-    transition: all 0.3s ease-in-out;
-}
-
-.st-key-analyze_button button:hover {
-    box-shadow: 0 0 20px #166ec5;
-    transform: scale(1.30);
-}
-
-</style>
-""", unsafe_allow_html=True)
+css_path = pathlib.Path(__file__).parent / "style.css"
+if css_path.exists():
+    load_css(css_path)
 
 image_path1 = os.path.join(os.path.dirname(__file__), "static", "image1.png")
 LOGO_URL_LARGE = Image.open(image_path1)
@@ -46,9 +28,22 @@ st.logo(
     LOGO_URL_LARGE,
     size="large"
 )
+
+# Sidebar for consistency
+with st.sidebar:
+    st.image(image_path2, width=160)
+    st.markdown("### Instructions")
+    st.info(
+        "1. **Upload RFP**: Select the Request for Proposal document.\n"
+        "2. **Upload Proposals**: Select one or more vendor proposals.\n"
+        "3. **Analyze**: Click to start the AI-powered analysis."
+    )
+    st.markdown("---")
+    st.caption("Powered by Azure OpenAI")
+
 col1, col2 = st.columns([1, 3])
 with col1:
-    st.image(image_path2, use_container_width=True) 
+    st.image(image_path2, use_container_width=True)
 with col2:
     st.title("AI-Powered RFP Analyzer")
 st.markdown('''''')
@@ -284,11 +279,3 @@ if st.session_state.process_running:
             sleep(2)
         st.session_state.process_running = False  # Reset process flag
         st.switch_page("pages/chat.py")
-
-st.markdown("---")
-st.subheader("Explore the advanced copilots")
-cta_col1, cta_col2 = st.columns(2)
-if cta_col1.button("📊 Bid Comparison Intelligence", use_container_width=True):
-    st.switch_page("pages/1_Bid_Comparison.py")
-if cta_col2.button("🤝 Negotiation Strategy Copilot", use_container_width=True):
-    st.switch_page("pages/2_Negotiation_Strategy.py")

@@ -52,8 +52,8 @@ AGENT_MODEL_VARIANTS: Mapping[str, str] = {
     AGENT_NAMES["legal_compliance"]: "gpt5-mini",
     AGENT_NAMES["vendor_evaluation"]: "gpt5-mini",
     AGENT_NAMES["market_intelligence"]: "gpt5-mini",
-    AGENT_NAMES["negotiation_strategy"]: "gpt5",
-    AGENT_NAMES["evaluation_report"]: "gpt5",
+    AGENT_NAMES["negotiation_strategy"]: "gpt5-mini",
+    AGENT_NAMES["evaluation_report"]: "gpt5-mini",
 }
 
 
@@ -104,12 +104,19 @@ def create_agents(agent_prompts: Mapping[str, str]) -> Dict[str, ChatAgent]:
         else:
             merged_options = additional_options
 
+        chat_options = dict(merged_options)
+        chat_options.pop("reasoning", None)
+
+        temperature = settings.get("temperature")
+        if reasoning_options:
+            temperature = None
+
         agents[agent_name] = client.create_agent(
             name=agent_name,
             instructions=settings["instructions"],
             description=settings["description"],
-            temperature=settings.get("temperature"),
-            additional_chat_options=merged_options or None,
+            temperature=temperature,
+            additional_chat_options=chat_options or None,
         )
     return agents
 

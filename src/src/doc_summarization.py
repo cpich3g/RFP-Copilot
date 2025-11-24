@@ -79,9 +79,9 @@ openai_client = _build_openai_client()
 
 _SUMMARY_MODEL_CONFIG: Dict[str, Dict[str, Any]] = {
     "rfp": {
-        "model_settings": get_model_settings("gpt5"),
-        "reasoning": get_reasoning_options("gpt5"),
-        "max_output_tokens": int(os.getenv("AZURE_OPENAI_GPT5_MAX_OUTPUT_TOKENS", "4096")),
+        "model_settings": get_model_settings("gpt5-mini"),
+        "reasoning": get_reasoning_options("gpt5-mini"),
+        "max_output_tokens": int(os.getenv("AZURE_OPENAI_GPT5_MINI_MAX_OUTPUT_TOKENS", "4096")),
         "temperature": 0.2,
     },
     "proposal": {
@@ -237,14 +237,41 @@ def summarize_chunk(chunk: str, doc_type: str) -> Any:
         completion = openai_client.responses.create(input=messages, **base_kwargs)
         return _extract_text_response(completion)
 
-    completion = openai_client.responses.parse(
-        input=messages,
-        text_format=VendorProposalSummary,
-        **base_kwargs,
-    )
-    parsed = completion.output_parsed
-    if parsed is not None:
-        return parsed.model_dump()
+    # For proposals, we use structured output.
+    # However, if the model output is truncated or malformed, the parser will fail.
+    # We wrap this in a try-except block to handle potential JSON errors gracefully.
+    try:
+        completion = openai_client.responses.parse(
+            input=messages,
+            text_format=VendorProposalSummary,
+            **base_kwargs,
+        )
+        parsed = completion.output_parsed
+        if parsed is not None:
+            return parsed.model_dump()
+    except Exception as e:
+        logger.warning(f"Failed to parse structured response for proposal: {e}")
+        # Fallback: try to get raw text if possible, or return a partial error dict
+        # Since 'responses.parse' might not return the raw text easily on failure,
+        # we might need to retry with a standard 'create' call or just return a generic error.
+        
+        # Let's try a standard create call as fallback to at least get the text
+        try:
+            fallback_completion = openai_client.responses.create(input=messages, **base_kwargs)
+            raw_text = _extract_text_response(fallback_completion)
+            return {
+                "vendor_name": "Unknown (Parse Error)",
+                "legal_summary": "Could not parse legal summary.",
+                "overall_summary": raw_text
+            }
+        except Exception as fallback_error:
+            logger.error(f"Fallback summarization also failed: {fallback_error}")
+            return {
+                "vendor_name": "Error",
+                "legal_summary": "Error generating summary.",
+                "overall_summary": "An error occurred while processing this document."
+            }
+            
     return {}
 
 

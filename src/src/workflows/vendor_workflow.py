@@ -1,15 +1,20 @@
 """Workflow utilities for orchestrating per-vendor RFP analysis."""
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Union
 
 from agent_framework import (
     AgentExecutor,
+    AgentExecutorRequest,
+    AgentExecutorResponse,
     AgentRunUpdateEvent,
     ChatMessage,
+    ConcurrentBuilder,
     Role,
     SequentialBuilder,
     Workflow,
+    WorkflowBuilder,
+    WorkflowExecutor,
     WorkflowOutputEvent,
     WorkflowRunResult,
 )
@@ -59,7 +64,10 @@ async def _ensure_state(conversation: List[ChatMessage], ctx: WorkflowContext) -
 
 
 def _make_prompt_executor(agent_name: str, context: VendorContext) -> FunctionExecutor:
-    async def _append_prompt(conversation: List[ChatMessage], ctx: WorkflowContext) -> None:
+    async def _append_prompt(conversation: Union[List[ChatMessage], AgentExecutorRequest], ctx: WorkflowContext) -> None:
+        if isinstance(conversation, AgentExecutorRequest):
+            conversation = conversation.messages
+
         state = await _ensure_agent_output_state(ctx)
         message = build_initial_task(agent_name, context, state)
         updated = list(conversation)
@@ -76,12 +84,23 @@ def _extract_latest_assistant(conversation: Sequence[ChatMessage]) -> ChatMessag
     return None
 
 
-def _make_capture_executor(agent_name: str) -> FunctionExecutor:
-    async def _capture(conversation: List[ChatMessage], ctx: WorkflowContext) -> None:
+def _make_capture_executor(agent_name: str, output_sink: Optional[Dict[str, str]] = None) -> FunctionExecutor:
+    async def _capture(conversation: Union[List[ChatMessage], AgentExecutorResponse], ctx: WorkflowContext) -> None:
+        if isinstance(conversation, AgentExecutorResponse):
+            if conversation.full_conversation is None:
+                raise RuntimeError("AgentExecutorResponse.full_conversation missing.")
+            conversation = conversation.full_conversation
+
         state = await _ensure_agent_output_state(ctx)
         latest = _extract_latest_assistant(conversation)
         attach_agent_output(state, agent_name, latest)
         await ctx.set_shared_state(_STATE_KEY, dict(state))
+        
+        if latest and latest.text:
+            if output_sink is not None:
+                output_sink[agent_name] = latest.text
+            await ctx.yield_output({"agent_name": agent_name, "agent_output": latest.text})
+            
         await ctx.send_message(list(conversation))
 
     return FunctionExecutor(_capture, id=f"{agent_name}-capture")
@@ -100,18 +119,67 @@ def _make_emit_executor(vendor_label: str) -> FunctionExecutor:
     return FunctionExecutor(_emit, id=f"{vendor_label}-emit")
 
 
-def build_vendor_workflow(
+def _make_populate_state_executor(initial_state: Dict[str, str]) -> FunctionExecutor:
+    async def _populate(conversation: List[ChatMessage], ctx: WorkflowContext) -> None:
+        state = await _ensure_agent_output_state(ctx)
+        state.update(initial_state)
+        await ctx.set_shared_state(_STATE_KEY, dict(state))
+        await ctx.send_message(list(conversation))
+    return FunctionExecutor(_populate, id="populate-state")
+
+
+def build_parallel_workflow(
+    *,
+    agent_prompts: Mapping[str, str],
+    context: VendorContext,
+    output_sink: Optional[Dict[str, str]] = None,
+) -> Workflow:
+    agents = create_agents(agent_prompts)
+    
+    parallel_agents = [
+        AGENT_NAMES["rfp_compliance"],
+        AGENT_NAMES["legal_compliance"],
+        AGENT_NAMES["vendor_evaluation"],
+        AGENT_NAMES["market_intelligence"],
+    ]
+
+    parallel_branches = []
+    for agent_name in parallel_agents:
+        agent = agents[agent_name]
+        
+        prompt_exec = _make_prompt_executor(agent_name, context)
+        agent_exec = AgentExecutor(agent, agent_thread=agent.get_new_thread(), id=agent_name)
+        capture_exec = _make_capture_executor(agent_name, output_sink)
+
+        branch = (
+            WorkflowBuilder()
+            .add_chain([prompt_exec, agent_exec, capture_exec])
+            .set_start_executor(prompt_exec)
+            .build()
+        )
+        parallel_branches.append(WorkflowExecutor(branch, id=f"{agent_name}-workflow"))
+
+    return ConcurrentBuilder().participants(parallel_branches).build()
+
+
+def build_sequential_workflow(
     *,
     agent_prompts: Mapping[str, str],
     vendor_label: str,
     context: VendorContext,
-) -> tuple[Workflow, List[ChatMessage]]:
-    """Assemble the Sequential workflow that evaluates a single vendor."""
-
+    initial_state: Dict[str, str],
+    output_sink: Optional[Dict[str, str]] = None,
+) -> Workflow:
     agents = create_agents(agent_prompts)
-    participants: List[Any] = [FunctionExecutor(_ensure_state, id="init-state")]
+    
+    participants: List[Any] = [_make_populate_state_executor(initial_state)]
 
-    for agent_name in INITIAL_SEQUENCE_ORDER:
+    sequential_agents = [
+        AGENT_NAMES["negotiation_strategy"],
+        AGENT_NAMES["evaluation_report"],
+    ]
+
+    for agent_name in sequential_agents:
         agent = agents[agent_name]
         participants.append(_make_prompt_executor(agent_name, context))
         participants.append(
@@ -121,76 +189,70 @@ def build_vendor_workflow(
                 id=agent_name,
             )
         )
-        participants.append(_make_capture_executor(agent_name))
+        participants.append(_make_capture_executor(agent_name, output_sink))
 
     participants.append(_make_emit_executor(vendor_label))
 
-    workflow = SequentialBuilder().participants(participants).build()
-    seed_conversation = [
+    return SequentialBuilder().participants(participants).build()
+
+
+async def run_full_vendor_process(
+    *,
+    agent_prompts: Mapping[str, str],
+    vendor_label: str,
+    context: VendorContext,
+    stream_callback: Optional[StreamingCallback] = None,
+) -> VendorWorkflowResult:
+    """Execute the full vendor analysis process (parallel + sequential phases)."""
+    
+    seed_messages = [
         make_system_seed_message(vendor_label),
         make_vendor_context_message(context, vendor_label),
     ]
-    return workflow, seed_conversation
-
-
-def _parse_conversation(conversation: Sequence[ChatMessage]) -> Dict[str, str]:
+    
     agent_outputs: Dict[str, str] = {}
-    user_messages_seen = 0
-    agent_index = -1
-    expecting_agent: str | None = None
+    
+    # Phase 1: Parallel Analysis
+    parallel_workflow = build_parallel_workflow(
+        agent_prompts=agent_prompts, 
+        context=context,
+        output_sink=agent_outputs
+    )
+    
+    async for event in parallel_workflow.run_stream(seed_messages):
+        if isinstance(event, AgentRunUpdateEvent) and stream_callback:
+            stream_callback(vendor_label, event.executor_id, event.update.text)
+        elif isinstance(event, WorkflowOutputEvent):
+            data = event.data
+            if isinstance(data, dict) and "agent_name" in data and "agent_output" in data:
+                agent_outputs[data["agent_name"]] = data["agent_output"]
 
-    for message in conversation:
-        role_value = str(message.role).lower()
-        if role_value.endswith("user"):
-            user_messages_seen += 1
-            if user_messages_seen <= 1:
-                continue  # Skip global context payload
-            if agent_index + 1 < len(INITIAL_SEQUENCE_ORDER):
-                agent_index += 1
-                expecting_agent = INITIAL_SEQUENCE_ORDER[agent_index]
-            else:
-                expecting_agent = None
-        elif role_value.endswith("assistant") and expecting_agent:
-            agent_outputs[expecting_agent] = message.text
-            expecting_agent = None
-
-    return agent_outputs
-
-
-async def run_vendor_workflow(
-    workflow: Workflow,
-    seed_messages: Iterable[ChatMessage],
-    *,
-    vendor_label: str,
-    stream_callback: Optional[StreamingCallback] = None,
-) -> VendorWorkflowResult:
-    """Execute the vendor workflow and yield structured outputs."""
-
-    final_conversation: List[ChatMessage] | None = None
-    agent_outputs: Dict[str, str] = {}
-    seed_messages_list = list(seed_messages)
-
-    async for event in workflow.run_stream(seed_messages_list):
+    # Phase 2: Sequential Synthesis
+    sequential_workflow = build_sequential_workflow(
+        agent_prompts=agent_prompts,
+        vendor_label=vendor_label,
+        context=context,
+        initial_state=agent_outputs,
+        output_sink=agent_outputs
+    )
+    
+    final_conversation: List[ChatMessage] = []
+    
+    async for event in sequential_workflow.run_stream(seed_messages):
         if isinstance(event, AgentRunUpdateEvent) and stream_callback:
             stream_callback(vendor_label, event.executor_id, event.update.text)
         elif isinstance(event, WorkflowOutputEvent):
             data = event.data
             if isinstance(data, dict) and {"vendor_label", "agent_outputs"} <= data.keys():
-                agent_outputs = {**data.get("agent_outputs", {})}
+                agent_outputs.update(data.get("agent_outputs", {}))
             elif isinstance(data, list):
                 final_conversation = [msg for msg in data if isinstance(msg, ChatMessage)]
 
-    if final_conversation is None:
-        # Fallback: attempt to fetch last available conversation by re-running in non-streaming mode.
-        result: WorkflowRunResult = await workflow.run(seed_messages_list)
-        for output in result.get_outputs():
-            if isinstance(output, list):
-                final_conversation = [msg for msg in output if isinstance(msg, ChatMessage)]
-                break
-
-    final_conversation = final_conversation or []
-    if not agent_outputs:
-        agent_outputs = _parse_conversation(final_conversation)
+    if not final_conversation:
+        # Fallback if streaming didn't yield conversation
+        # Note: run_stream usually yields output events. If not, we might need to run() but that re-executes.
+        # For now, assume streaming works or conversation is less critical than outputs.
+        pass
 
     return VendorWorkflowResult(
         vendor_label=vendor_label,
