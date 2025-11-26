@@ -74,3 +74,61 @@ To enable this:
 1. Ensure GitHub Actions is enabled in your repository settings.
 2. The workflow uses `GITHUB_TOKEN` to authenticate with GHCR, so no extra secrets are needed for the registry.
 3. If your `agent-framework` dependency is in a private feed, you may need to update the Dockerfile and workflow to authenticate with that feed.
+
+### Using the Image
+
+#### 1. Run Locally with Docker
+
+To run the image you just pushed (or pulled from GHCR) locally:
+
+1. **Authenticate** (if you haven't already):
+
+   ```powershell
+   docker login ghcr.io -u <your-github-username>
+   ```
+
+2. **Run the container**:
+   Make sure you have your `.env` file ready in the `src` folder.
+
+   ```powershell
+   docker run -p 8501:8501 --env-file src/.env ghcr.io/cpich3g/rfp-copilot:latest
+   ```
+
+   Access the app at `http://localhost:8501`.
+
+#### 2. Deploy to Azure Container Apps (ACA)
+
+You can deploy this image directly to Azure Container Apps.
+
+##### Option A: Using Azure CLI (Quickest)
+
+1. **Create a Resource Group** (if needed):
+
+   ```powershell
+   az group create --name rfp-copilot-rg --location eastus
+   ```
+
+2. **Create the Container App**:
+   Replace `<GITHUB_PAT>` with your GitHub Personal Access Token (must have `read:packages` scope).
+
+   ```powershell
+   az containerapp up `
+     --name rfp-copilot `
+     --resource-group rfp-copilot-rg `
+     --image ghcr.io/cpich3g/rfp-copilot:latest `
+     --ingress external `
+     --target-port 8501 `
+     --registry-server ghcr.io `
+     --registry-username cpich3g `
+     --registry-password <GITHUB_PAT> `
+     --env-vars AZURE_OPENAI_API_KEY=... AZURE_OPENAI_ENDPOINT=...
+   ```
+
+   *Note: Pass all required environment variables from your `.env` file using the `--env-vars` flag (space-separated `KEY=VALUE`).*
+
+##### Option B: Using the `infra/` Bicep files (Infrastructure as Code)
+
+Your project is already set up with `azd` (Azure Developer CLI) structure. By default, `azd up` builds the code from source. To use your GHCR image instead:
+
+1. Modify `azure.yaml` to point to the image instead of the Dockerfile (optional, if you want `azd` to manage it).
+2. Or, manually update the deployment to pull from GHCR by configuring the container registry secrets in the Azure Portal after deployment.
