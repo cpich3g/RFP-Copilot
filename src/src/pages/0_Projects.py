@@ -26,7 +26,14 @@ from services.project_service import (
     ProjectService,
     ProjectStatus,
 )
-from doc_summarization import summarize_document
+
+# Try to import summarization - it may fail if Azure services aren't configured
+try:
+    from doc_summarization import summarize_document
+    SUMMARIZATION_AVAILABLE = True
+except Exception:
+    SUMMARIZATION_AVAILABLE = False
+    summarize_document = None
 
 st.set_page_config(page_title="Projects", page_icon="📁", layout="wide")
 
@@ -199,6 +206,13 @@ def render_document_upload(project: Project):
     """Render the document upload section."""
     st.subheader("📤 Upload Documents")
 
+    if not SUMMARIZATION_AVAILABLE:
+        st.warning(
+            "⚠️ Document summarization is not available. "
+            "Azure Document Intelligence and OpenAI services must be configured. "
+            "Documents will be stored without automated summaries."
+        )
+
     tabs = st.tabs(["RFP Document", "Vendor Proposals", "Supporting Documents"])
 
     with tabs[0]:
@@ -217,16 +231,23 @@ def render_document_upload(project: Project):
             if rfp_file:
                 with st.spinner("Processing RFP document..."):
                     rfp_file.seek(0)
-                    summary = summarize_document(rfp_file, "rfp")
+                    summary = None
+                    if SUMMARIZATION_AVAILABLE and summarize_document:
+                        try:
+                            summary = summarize_document(rfp_file, "rfp")
+                        except Exception as e:
+                            st.warning(f"Could not summarize document: {e}")
+                    
                     project_service.add_document(
                         project,
                         name=rfp_file.name,
                         doc_type=DocumentType.RFP,
                         summary={"content": summary} if isinstance(summary, str) else summary,
                     )
-                    project.rfp_summary = summary if isinstance(summary, str) else summary.get("content", "")
-                    project_service.update_project(project)
-                st.success("RFP uploaded and summarized!")
+                    if summary:
+                        project.rfp_summary = summary if isinstance(summary, str) else summary.get("content", "")
+                        project_service.update_project(project)
+                st.success("RFP uploaded!" + (" and summarized!" if summary else ""))
                 st.rerun()
 
     with tabs[1]:
@@ -252,12 +273,18 @@ def render_document_upload(project: Project):
             for prop_file in proposal_files:
                 with st.spinner(f"Processing {prop_file.name}..."):
                     prop_file.seek(0)
-                    summary = summarize_document(prop_file, "proposal")
+                    summary = None
+                    if SUMMARIZATION_AVAILABLE and summarize_document:
+                        try:
+                            summary = summarize_document(prop_file, "proposal")
+                        except Exception as e:
+                            st.warning(f"Could not summarize {prop_file.name}: {e}")
+                    
                     project_service.add_document(
                         project,
                         name=prop_file.name,
                         doc_type=DocumentType.PROPOSAL,
-                        summary=summary if isinstance(summary, dict) else {"content": summary},
+                        summary=summary if isinstance(summary, dict) else {"content": summary} if summary else None,
                     )
             st.success(f"{len(proposal_files)} proposal(s) uploaded!")
             st.rerun()

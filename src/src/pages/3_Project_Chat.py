@@ -15,27 +15,45 @@ from time import sleep
 from typing import Callable, Dict, List, Optional
 
 import streamlit as st
-from azure.core.credentials import AzureKeyCredential
-from azure.search.documents import SearchClient
 from dotenv import load_dotenv
 from PIL import Image
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from app import AGENT_NAMES, create_chat_client, get_agent_prompts, get_reasoning_options
 from services.project_service import (
     AgentType,
     Project,
     ProjectService,
     ProjectStatus,
 )
-from plugins.legal_compliance_plugin import LegalCompliancePlugin
-from plugins.vendor_evaluation_plugin import VendorEvaluationPlugin
-from plugins.market_intelligence_plugin import MarketIntelligencePlugin
-from rfp_agents import VendorContext, create_agents, INITIAL_SEQUENCE_ORDER
-from agent_framework_session import AgentFrameworkSession
-from agent_framework import ChatMessage, TextContent
+
+# Try to import Azure and agent-related modules - they may fail if not configured
+CHAT_AVAILABLE = True
+CHAT_ERROR_MSG = ""
+
+try:
+    from azure.core.credentials import AzureKeyCredential
+    from azure.search.documents import SearchClient
+    from app import AGENT_NAMES, create_chat_client, get_agent_prompts, get_reasoning_options
+    from plugins.legal_compliance_plugin import LegalCompliancePlugin
+    from plugins.vendor_evaluation_plugin import VendorEvaluationPlugin
+    from plugins.market_intelligence_plugin import MarketIntelligencePlugin
+    from rfp_agents import VendorContext, create_agents, INITIAL_SEQUENCE_ORDER
+    from agent_framework_session import AgentFrameworkSession
+    from agent_framework import ChatMessage, TextContent
+except Exception as e:
+    CHAT_AVAILABLE = False
+    CHAT_ERROR_MSG = str(e)
+    # Define fallback constants
+    AGENT_NAMES = {
+        "rfp_compliance": "RFPCompliance",
+        "legal_compliance": "LegalCompliance", 
+        "vendor_evaluation": "VendorEvaluation",
+        "market_intelligence": "MarketIntelligence",
+        "negotiation_strategy": "NegotiationStrategy",
+        "evaluation_report": "EvaluationReport",
+    }
 
 st.set_page_config(page_title="Project Chat", page_icon="💬", layout="wide")
 
@@ -261,6 +279,19 @@ def main():
     if not project:
         st.warning("No project selected. Please select a project first.")
         if st.button("Go to Projects"):
+            st.switch_page("pages/0_Projects.py")
+        return
+
+    # Check if chat functionality is available
+    if not CHAT_AVAILABLE:
+        st.error(
+            "⚠️ Chat functionality is not available. "
+            "Azure OpenAI and related services must be configured.\n\n"
+            f"Error: {CHAT_ERROR_MSG}"
+        )
+        if st.button("← Back to Project"):
+            st.session_state.project_view_mode = "detail"
+            st.session_state.current_project_id = project.id
             st.switch_page("pages/0_Projects.py")
         return
 
