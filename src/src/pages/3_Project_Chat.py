@@ -42,7 +42,8 @@ try:
     from rfp_agents import VendorContext, create_agents, INITIAL_SEQUENCE_ORDER
     from agent_framework_session import AgentFrameworkSession
     from agent_framework import ChatMessage, TextContent
-except Exception as e:
+except (ImportError, ModuleNotFoundError, KeyError, ValueError) as e:
+    # These exceptions occur when Azure services or agent framework aren't configured
     CHAT_AVAILABLE = False
     CHAT_ERROR_MSG = str(e)
     # Define fallback constants
@@ -115,6 +116,13 @@ def get_active_project() -> Optional[Project]:
     return project_service.get_project(project_id)
 
 
+def _get_proposal_field(proposal_summary, field: str, default: str = "") -> str:
+    """Safely extract a field from proposal summary dict."""
+    if isinstance(proposal_summary, dict):
+        return proposal_summary.get(field, default)
+    return default
+
+
 async def build_project_context(project: Project) -> VendorContext:
     """Build the vendor context from project data."""
     rfp_summary = project.rfp_summary or ""
@@ -136,7 +144,7 @@ async def build_project_context(project: Project) -> VendorContext:
             index_name=legal_policy_index,
             credential=AzureKeyCredential(azure_api_key),
         )
-        legal_summary = proposal_summary.get("legal_summary", "") if isinstance(proposal_summary, dict) else ""
+        legal_summary = _get_proposal_field(proposal_summary, "legal_summary", "")
         legal_compliance_plugin = LegalCompliancePlugin(
             search_client=legal_search_client,
             vendor_legal_summary=legal_summary,
@@ -150,7 +158,7 @@ async def build_project_context(project: Project) -> VendorContext:
             index_name=supplier_insights_index,
             credential=AzureKeyCredential(azure_api_key),
         )
-        vendor_name = proposal_summary.get("vendor_name", "Unknown Vendor") if isinstance(proposal_summary, dict) else "Unknown Vendor"
+        vendor_name = _get_proposal_field(proposal_summary, "vendor_name", "Unknown Vendor")
         vendor_evaluation_plugin = VendorEvaluationPlugin(
             search_client=vendor_search_client,
             vendor_name=vendor_name,

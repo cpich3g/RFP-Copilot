@@ -39,6 +39,10 @@ class AgentType(str, Enum):
     EVALUATION_REPORT = "evaluation_report"
 
 
+# Default agents for new projects (can be overridden via configuration)
+DEFAULT_ENABLED_AGENTS = [AgentType.RFP_COMPLIANCE, AgentType.LEGAL_COMPLIANCE]
+
+
 class ProjectStatus(str, Enum):
     """Status of a project in the procurement workflow."""
     DRAFT = "draft"
@@ -322,8 +326,7 @@ class ProjectService:
         """Create a new project."""
         now = _utc_now()
         if enabled_agents is None:
-            # Default to RFP compliance and Legal compliance for initial review
-            enabled_agents = [AgentType.RFP_COMPLIANCE, AgentType.LEGAL_COMPLIANCE]
+            enabled_agents = list(DEFAULT_ENABLED_AGENTS)
 
         project = Project(
             id=str(uuid.uuid4()),

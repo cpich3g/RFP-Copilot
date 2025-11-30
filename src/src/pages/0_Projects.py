@@ -31,7 +31,8 @@ from services.project_service import (
 try:
     from doc_summarization import summarize_document
     SUMMARIZATION_AVAILABLE = True
-except Exception:
+except (ImportError, ModuleNotFoundError, KeyError, ValueError) as e:
+    # KeyError/ValueError may occur if required environment variables are missing
     SUMMARIZATION_AVAILABLE = False
     summarize_document = None
 
