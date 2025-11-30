@@ -65,16 +65,20 @@ class MarketIntelligencePlugin:
         # Build report with safe access to potentially missing keys
         sections = [f"### Market Intelligence Report for {industry}\n"]
         
-        if trends := industry_data.get("trends"):
+        trends = industry_data.get("trends")
+        if trends:
             sections.append("**Industry Trends:**\n- " + "\n- ".join(trends))
         
-        if competitor_insights := industry_data.get("competitor_insights"):
+        competitor_insights = industry_data.get("competitor_insights")
+        if competitor_insights:
             sections.append("\n**Competitor Insights:**\n- " + "\n- ".join(competitor_insights))
         
-        if supply_chain_risks := industry_data.get("supply_chain_risks"):
+        supply_chain_risks = industry_data.get("supply_chain_risks")
+        if supply_chain_risks:
             sections.append("\n**Supply Chain Risks:**\n- " + "\n- ".join(supply_chain_risks))
         
-        if regulatory_changes := industry_data.get("regulatory_changes"):
+        regulatory_changes = industry_data.get("regulatory_changes")
+        if regulatory_changes:
             sections.append("\n**Regulatory Changes:**\n- " + "\n- ".join(regulatory_changes))
 
         return "\n".join(sections)

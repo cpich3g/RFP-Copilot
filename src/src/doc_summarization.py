@@ -62,11 +62,6 @@ def _get_document_intelligence_client() -> DocumentIntelligenceClient:
     )
 
 
-# Keep backward compatibility aliases
-credential = property(lambda self: _get_credential())
-document_intelligence_client = property(lambda self: _get_document_intelligence_client())
-
-
 def _get_azure_ad_token(scope: str = AZURE_OPENAI_SCOPE) -> str:
     """Get Azure AD token for authentication."""
     return _get_credential().get_token(scope).token
@@ -111,15 +106,6 @@ def _get_openai_client() -> AzureOpenAI:
                 ) from exc
 
     return AzureOpenAI(**client_kwargs)
-
-
-# Backward compatibility: access client as module-level variable
-def _get_openai_client_compat() -> AzureOpenAI:
-    """Compatibility wrapper for module-level access."""
-    return _get_openai_client()
-
-
-openai_client = property(lambda self: _get_openai_client())
 
 _SUMMARY_MODEL_CONFIG: Dict[str, Dict[str, Any]] = {
     "rfp": {
