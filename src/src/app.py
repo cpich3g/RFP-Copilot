@@ -140,8 +140,12 @@ def create_chat_client(*, model_variant: str = "gpt5-mini") -> AzureOpenAIChatCl
 
 # Function to extract agent prompts
 def get_agent_prompts() -> dict:
-    """Loads agent prompts from a Jinja template."""
-    # Path to the directory of app.py
+    """Load agent prompts from a Jinja template.
+    
+    Returns:
+        Dictionary mapping agent names to their prompt instructions.
+        Returns empty dict if template parsing fails.
+    """
     script_dir = os.path.dirname(__file__)
     env = Environment(loader=FileSystemLoader(script_dir))
     template = env.get_template("agent_prompts.jinja")
@@ -149,5 +153,5 @@ def get_agent_prompts() -> dict:
     try:
         return json.loads(template.render())
     except json.JSONDecodeError as e:
-        print(f"\n[ERROR] Jinja Prompt - JSON Parsing Failed: {e}")
+        logger.error("Failed to parse agent prompts from Jinja template: %s", e)
         return {}

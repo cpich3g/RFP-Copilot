@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, Iterable
+from functools import lru_cache
+from typing import Any, Dict, Iterable, Optional
 
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
@@ -18,30 +19,65 @@ from app import get_model_settings, get_reasoning_options
 
 load_dotenv()
 
-DOCUMENT_INTELLIGENCE_ENDPOINT = os.environ["AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"]
-DOCUMENT_INTELLIGENCE_KEY = os.environ["AZURE_DOC_INTELLIGENCE_KEY"]
-AZURE_OPENAI_ENDPOINT = os.environ["AZURE_OPENAI_ENDPOINT"]
+# Environment configuration - lazy loaded to avoid startup failures
+DOCUMENT_INTELLIGENCE_ENDPOINT = os.environ.get("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "")
+DOCUMENT_INTELLIGENCE_KEY = os.environ.get("AZURE_DOC_INTELLIGENCE_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_AUTH_MODE = os.getenv("AZURE_OPENAI_AUTH_MODE", "default_credential").lower()
 AZURE_OPENAI_SCOPE = os.getenv("AZURE_OPENAI_TOKEN_SCOPE", "https://cognitiveservices.azure.com/.default")
 
+# Constants for token limits and chunking
+MAX_MODEL_TOKENS = 126000
+RESERVED_TOKENS = 1000
+
 logger = logging.getLogger(__name__)
 
+# Lazy-loaded clients (initialized on first use)
+_document_intelligence_client: Optional[DocumentIntelligenceClient] = None
+_openai_client: Optional[AzureOpenAI] = None
+_credential: Optional[DefaultAzureCredential] = None
 
-document_intelligence_client = DocumentIntelligenceClient(
-    endpoint=DOCUMENT_INTELLIGENCE_ENDPOINT,
-    credential=AzureKeyCredential(DOCUMENT_INTELLIGENCE_KEY),
-)
 
-credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+def _get_credential() -> DefaultAzureCredential:
+    """Get or create the Azure credential (lazy initialization)."""
+    global _credential
+    if _credential is None:
+        _credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    return _credential
+
+
+@lru_cache(maxsize=1)
+def _get_document_intelligence_client() -> DocumentIntelligenceClient:
+    """Get or create the Document Intelligence client (lazy initialization)."""
+    if not DOCUMENT_INTELLIGENCE_ENDPOINT or not DOCUMENT_INTELLIGENCE_KEY:
+        raise ValueError(
+            "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOC_INTELLIGENCE_KEY "
+            "environment variables must be set."
+        )
+    return DocumentIntelligenceClient(
+        endpoint=DOCUMENT_INTELLIGENCE_ENDPOINT,
+        credential=AzureKeyCredential(DOCUMENT_INTELLIGENCE_KEY),
+    )
+
+
+# Keep backward compatibility aliases
+credential = property(lambda self: _get_credential())
+document_intelligence_client = property(lambda self: _get_document_intelligence_client())
 
 
 def _get_azure_ad_token(scope: str = AZURE_OPENAI_SCOPE) -> str:
-    return credential.get_token(scope).token
+    """Get Azure AD token for authentication."""
+    return _get_credential().get_token(scope).token
 
 
-def _build_openai_client() -> AzureOpenAI:
+@lru_cache(maxsize=1)
+def _get_openai_client() -> AzureOpenAI:
+    """Get or create the OpenAI client (lazy initialization with caching)."""
+    if not AZURE_OPENAI_ENDPOINT:
+        raise ValueError("AZURE_OPENAI_ENDPOINT environment variable must be set.")
+    
     client_kwargs: Dict[str, Any] = {
         "azure_endpoint": AZURE_OPENAI_ENDPOINT,
         "api_version": AZURE_OPENAI_API_VERSION,
@@ -52,17 +88,19 @@ def _build_openai_client() -> AzureOpenAI:
             client_kwargs["api_key"] = AZURE_OPENAI_KEY
         else:
             logger.warning(
-                "AZURE_OPENAI_AUTH_MODE is set to 'api_key' but AZURE_OPENAI_API_KEY is missing; falling back to DefaultAzureCredential."
+                "AZURE_OPENAI_AUTH_MODE is set to 'api_key' but AZURE_OPENAI_API_KEY is missing; "
+                "falling back to DefaultAzureCredential."
             )
             client_kwargs["azure_ad_token_provider"] = _get_azure_ad_token
     else:
         try:
-            credential.get_token(AZURE_OPENAI_SCOPE)
+            _get_credential().get_token(AZURE_OPENAI_SCOPE)
             client_kwargs["azure_ad_token_provider"] = _get_azure_ad_token
         except Exception as exc:  # pragma: no cover - network credential check
             if AZURE_OPENAI_KEY:
                 logger.warning(
-                    "DefaultAzureCredential failed to acquire a token (%s); falling back to AZURE_OPENAI_API_KEY.",
+                    "DefaultAzureCredential failed to acquire a token (%s); "
+                    "falling back to AZURE_OPENAI_API_KEY.",
                     exc,
                 )
                 client_kwargs.pop("azure_ad_token_provider", None)
@@ -75,7 +113,13 @@ def _build_openai_client() -> AzureOpenAI:
     return AzureOpenAI(**client_kwargs)
 
 
-openai_client = _build_openai_client()
+# Backward compatibility: access client as module-level variable
+def _get_openai_client_compat() -> AzureOpenAI:
+    """Compatibility wrapper for module-level access."""
+    return _get_openai_client()
+
+
+openai_client = property(lambda self: _get_openai_client())
 
 _SUMMARY_MODEL_CONFIG: Dict[str, Dict[str, Any]] = {
     "rfp": {
@@ -135,23 +179,47 @@ _PROMPTS: Dict[str, str] = {
 
 
 class VendorProposalSummary(BaseModel):
+    """Pydantic model for structured vendor proposal summary."""
+    
     vendor_name: str
     legal_summary: str
     overall_summary: str
 
 
 def analyze_document(file_obj) -> str:
-    """Analyze the layout of an in-memory document using Azure Document Intelligence."""
-
+    """Analyze the layout of an in-memory document using Azure Document Intelligence.
+    
+    Args:
+        file_obj: File-like object containing the document to analyze.
+        
+    Returns:
+        Extracted text content from the document.
+        
+    Raises:
+        ValueError: If Document Intelligence is not configured.
+    """
     file_obj.seek(0)
-    poller = document_intelligence_client.begin_analyze_document("prebuilt-layout", body=file_obj)
+    client = _get_document_intelligence_client()
+    poller = client.begin_analyze_document("prebuilt-layout", body=file_obj)
     result_json = poller.result()
     return result_json.content
 
 
-def chunk_text(content: str, max_model_tokens: int, reserved_tokens: int = 1000) -> list[str]:
-    """Chunk text into segments that respect model token limits."""
-
+def chunk_text(
+    content: str,
+    max_model_tokens: int = MAX_MODEL_TOKENS,
+    reserved_tokens: int = RESERVED_TOKENS,
+) -> list[str]:
+    """Chunk text into segments that respect model token limits.
+    
+    Args:
+        content: The text content to chunk.
+        max_model_tokens: Maximum tokens the model can handle.
+        reserved_tokens: Tokens to reserve for prompt and response.
+        
+    Returns:
+        List of text chunks.
+    """
     max_tokens = max_model_tokens - reserved_tokens
     words = content.split()
     chunks: list[str] = []
@@ -233,15 +301,17 @@ def summarize_chunk(chunk: str, doc_type: str) -> Any:
         },
     ]
 
+    client = _get_openai_client()
+    
     if doc_type == "rfp":
-        completion = openai_client.responses.create(input=messages, **base_kwargs)
+        completion = client.responses.create(input=messages, **base_kwargs)
         return _extract_text_response(completion)
 
     # For proposals, we use structured output.
     # However, if the model output is truncated or malformed, the parser will fail.
     # We wrap this in a try-except block to handle potential JSON errors gracefully.
     try:
-        completion = openai_client.responses.parse(
+        completion = client.responses.parse(
             input=messages,
             text_format=VendorProposalSummary,
             **base_kwargs,
@@ -250,14 +320,14 @@ def summarize_chunk(chunk: str, doc_type: str) -> Any:
         if parsed is not None:
             return parsed.model_dump()
     except Exception as e:
-        logger.warning(f"Failed to parse structured response for proposal: {e}")
+        logger.warning("Failed to parse structured response for proposal: %s", e)
         # Fallback: try to get raw text if possible, or return a partial error dict
         # Since 'responses.parse' might not return the raw text easily on failure,
         # we might need to retry with a standard 'create' call or just return a generic error.
         
         # Let's try a standard create call as fallback to at least get the text
         try:
-            fallback_completion = openai_client.responses.create(input=messages, **base_kwargs)
+            fallback_completion = client.responses.create(input=messages, **base_kwargs)
             raw_text = _extract_text_response(fallback_completion)
             return {
                 "vendor_name": "Unknown (Parse Error)",
@@ -265,7 +335,7 @@ def summarize_chunk(chunk: str, doc_type: str) -> Any:
                 "overall_summary": raw_text
             }
         except Exception as fallback_error:
-            logger.error(f"Fallback summarization also failed: {fallback_error}")
+            logger.error("Fallback summarization also failed: %s", fallback_error)
             return {
                 "vendor_name": "Error",
                 "legal_summary": "Error generating summary.",
@@ -307,10 +377,20 @@ def save_summary(summary: Any, doc_type: str) -> Any:
 
 
 def summarize_document(file_obj, doc_type: str) -> Any:
-    """Summarize an in-memory document without saving it locally."""
-
+    """Summarize an in-memory document without saving it locally.
+    
+    Args:
+        file_obj: File-like object containing the document to summarize.
+        doc_type: Type of document ('rfp' or 'proposal').
+        
+    Returns:
+        Structured summary payload for the document type.
+        
+    Raises:
+        ValueError: If doc_type is not supported.
+    """
     analyze_result = analyze_document(file_obj)
-    chunks = chunk_text(analyze_result, 126000)
+    chunks = chunk_text(analyze_result, MAX_MODEL_TOKENS)
 
     if not chunks:
         return save_summary("", doc_type)
