@@ -121,6 +121,34 @@ def _coerce_anchor_value(value: Any) -> Any:
     return value
 
 
+def _load_json_as_records(data: bytes, filename: str) -> List[Dict[str, Any]]:
+    """Load JSON data and ensure it's a list of records for DataFrame conversion.
+    
+    Args:
+        data: Raw bytes of the JSON file.
+        filename: Name of the file for error messages.
+        
+    Returns:
+        List of dictionaries suitable for DataFrame creation.
+        
+    Raises:
+        ValueError: If JSON is invalid or cannot be converted to records.
+    """
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse JSON file {filename}: {e}")
+        raise ValueError(f"Invalid JSON format in file '{filename}'.") from e
+    
+    # Convert single object to list for consistent DataFrame handling
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return parsed
+    
+    raise ValueError(f"JSON file '{filename}' must contain an object or array of objects.")
+
+
 @dataclass
 class WeightingConfig:
     raw_weights: Dict[str, float] = field(default_factory=lambda: DEFAULT_METRIC_WEIGHTS.copy())
@@ -277,15 +305,13 @@ class BidComparisonEngine:
             elif suffix in {"xls", "xlsx"}:
                 df = pd.read_excel(stream)
             elif suffix in {"json"}:
-                records = json.loads(data.decode("utf-8"))
-                if not isinstance(records, list):
-                    records = [records]
+                records = _load_json_as_records(data, name)
                 df = pd.DataFrame(records)
             elif suffix == "docx":
                 df = _docx_to_dataframe(data)
             else:
                 raise ValueError(f"Unsupported file format for {name}. Upload CSV, XLSX, JSON, or DOCX.")
-        except (json.JSONDecodeError, pd.errors.ParserError) as e:
+        except pd.errors.ParserError as e:
             logger.warning(f"Failed to parse file {name}: {e}")
             raise ValueError(f"Failed to parse file '{name}'. Please ensure the file is properly formatted.") from e
         
@@ -573,15 +599,13 @@ class MultiRFPComparisonEngine:
             elif suffix in {"xls", "xlsx"}:
                 df = pd.read_excel(stream)
             elif suffix in {"json"}:
-                records = json.loads(data.decode("utf-8"))
-                if not isinstance(records, list):
-                    records = [records]
+                records = _load_json_as_records(data, name)
                 df = pd.DataFrame(records)
             elif suffix == "docx":
                 df = _docx_to_dataframe(data)
             else:
                 raise ValueError(f"Unsupported file format for {name}. Upload CSV, XLSX, JSON, or DOCX.")
-        except (json.JSONDecodeError, pd.errors.ParserError) as e:
+        except pd.errors.ParserError as e:
             logger.warning(f"Failed to parse file {name}: {e}")
             raise ValueError(f"Failed to parse file '{name}'. Please ensure the file is properly formatted.") from e
         
@@ -596,7 +620,8 @@ class MultiRFPComparisonEngine:
                     df = df.rename(columns={col: "supplier"})
                     break
             else:
-                # Use base filename (without extension) as supplier name
+                # Use base filename (without extension) as supplier name using rsplit to handle
+                # multiple dots in filename (e.g., "vendor.data.json" -> "vendor.data")
                 df["supplier"] = name.rsplit(".", 1)[0] if "." in name else name
         
         return df

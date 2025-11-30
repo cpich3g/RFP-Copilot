@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -255,7 +256,6 @@ class ProjectStorage:
         if ".." in project_id or "/" in project_id or "\\" in project_id:
             raise ValueError("Invalid project ID format.")
         # Only allow alphanumeric, hyphens, and underscores (UUID format)
-        import re
         if not re.match(r'^[a-zA-Z0-9_-]+$', project_id):
             raise ValueError("Invalid project ID format.")
 

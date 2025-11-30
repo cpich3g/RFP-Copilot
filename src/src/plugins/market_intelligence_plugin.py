@@ -5,6 +5,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Maximum allowed length for industry name input
+MAX_INDUSTRY_NAME_LENGTH = 100
+
 
 class MarketIntelligencePlugin:
     """
@@ -64,8 +67,8 @@ class MarketIntelligencePlugin:
         if not industry or not isinstance(industry, str):
             return "Invalid industry parameter provided."
         
-        # Limit industry name length
-        industry = industry[:100].strip()
+        # Limit industry name length to prevent abuse
+        industry = industry[:MAX_INDUSTRY_NAME_LENGTH].strip()
         
         industry_data = self.market_data.get(industry, None)
 
