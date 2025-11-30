@@ -137,7 +137,8 @@ def get_model_settings(model_variant: str) -> Dict[str, Any]:
     return _resolve_model_settings(model_variant).copy()
 
 
-@lru_cache(maxsize=None)
+# Use bounded cache to prevent memory leaks - 10 is sufficient for number of model variants
+@lru_cache(maxsize=10)
 def create_chat_client(*, model_variant: str = "gpt5-mini") -> AzureOpenAIChatClient:
     """Instantiate an Azure OpenAI chat client for the requested model variant."""
 

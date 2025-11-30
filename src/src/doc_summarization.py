@@ -17,24 +17,44 @@ from app import get_model_settings, get_openai_auth_kwargs, get_reasoning_option
 
 load_dotenv()
 
-DOCUMENT_INTELLIGENCE_ENDPOINT = os.environ["AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"]
-DOCUMENT_INTELLIGENCE_KEY = os.environ["AZURE_DOC_INTELLIGENCE_KEY"]
-AZURE_OPENAI_ENDPOINT = os.environ["AZURE_OPENAI_ENDPOINT"]
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-
 logger = logging.getLogger(__name__)
 
 
-document_intelligence_client = DocumentIntelligenceClient(
-    endpoint=DOCUMENT_INTELLIGENCE_ENDPOINT,
-    credential=AzureKeyCredential(DOCUMENT_INTELLIGENCE_KEY),
-)
+def _get_required_env(name: str) -> str:
+    """Get a required environment variable with clear error messaging."""
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"Required environment variable '{name}' is not set. Please configure it in your .env file.")
+    return value
+
+
+# Lazy initialization to prevent crashes when environment is not fully configured
+_document_intelligence_client = None
+_openai_client = None
+
+
+def _get_document_intelligence_client() -> DocumentIntelligenceClient:
+    """Get Document Intelligence client with lazy initialization."""
+    global _document_intelligence_client
+    if _document_intelligence_client is None:
+        endpoint = _get_required_env("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
+        key = _get_required_env("AZURE_DOC_INTELLIGENCE_KEY")
+        _document_intelligence_client = DocumentIntelligenceClient(
+            endpoint=endpoint,
+            credential=AzureKeyCredential(key),
+        )
+    return _document_intelligence_client
+
+
+# Keep for backward compatibility
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
 
 
 def _build_openai_client() -> AzureOpenAI:
     """Build an Azure OpenAI client using shared authentication logic from app.py."""
+    azure_endpoint = _get_required_env("AZURE_OPENAI_ENDPOINT")
     client_kwargs: Dict[str, Any] = {
-        "azure_endpoint": AZURE_OPENAI_ENDPOINT,
+        "azure_endpoint": azure_endpoint,
         "api_version": AZURE_OPENAI_API_VERSION,
     }
 
@@ -45,7 +65,13 @@ def _build_openai_client() -> AzureOpenAI:
     return AzureOpenAI(**client_kwargs)
 
 
-openai_client = _build_openai_client()
+def _get_openai_client() -> AzureOpenAI:
+    """Get OpenAI client with lazy initialization."""
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = _build_openai_client()
+    return _openai_client
+
 
 _SUMMARY_MODEL_CONFIG: Dict[str, Dict[str, Any]] = {
     "rfp": {
@@ -122,9 +148,9 @@ class VendorProposalSummary(BaseModel):
 
 def analyze_document(file_obj) -> str:
     """Analyze the layout of an in-memory document using Azure Document Intelligence."""
-
+    client = _get_document_intelligence_client()
     file_obj.seek(0)
-    poller = document_intelligence_client.begin_analyze_document("prebuilt-layout", body=file_obj)
+    poller = client.begin_analyze_document("prebuilt-layout", body=file_obj)
     result_json = poller.result()
     return result_json.content
 
@@ -213,15 +239,17 @@ def summarize_chunk(chunk: str, doc_type: str) -> Any:
         },
     ]
 
+    client = _get_openai_client()
+    
     if doc_type == "rfp":
-        completion = openai_client.responses.create(input=messages, **base_kwargs)
+        completion = client.responses.create(input=messages, **base_kwargs)
         return _extract_text_response(completion)
 
     # For proposals, we use structured output.
     # However, if the model output is truncated or malformed, the parser will fail.
     # We wrap this in a try-except block to handle potential JSON errors gracefully.
     try:
-        completion = openai_client.responses.parse(
+        completion = client.responses.parse(
             input=messages,
             text_format=VendorProposalSummary,
             **base_kwargs,
@@ -237,7 +265,7 @@ def summarize_chunk(chunk: str, doc_type: str) -> Any:
         
         # Let's try a standard create call as fallback to at least get the text
         try:
-            fallback_completion = openai_client.responses.create(input=messages, **base_kwargs)
+            fallback_completion = client.responses.create(input=messages, **base_kwargs)
             raw_text = _extract_text_response(fallback_completion)
             return {
                 "vendor_name": "Unknown (Parse Error)",
