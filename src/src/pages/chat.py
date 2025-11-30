@@ -241,7 +241,7 @@ async def build_session_for_vendor(
     return session, initial_messages, vendor_display_name
 
 
-async def generate_comparison_summary(reports: list[dict[str, object]]) -> str | None:
+async def generate_comparison_summary(reports: list[dict[str, object]], vendor_summaries: list[dict] | None = None) -> str | None:
     if not reports:
         return None
 
@@ -251,14 +251,27 @@ async def generate_comparison_summary(reports: list[dict[str, object]]) -> str |
     chat_options.pop("reasoning", None)
     system_prompt = (
         "You are an expert procurement analyst. Compare multiple vendor proposals using the agent outputs. "
-        "Synthesize key strengths, risks, and compliance findings, rank the vendors, and recommend the best fit."
+        "Synthesize key strengths, risks, compliance findings, AND PRICING/COST information. "
+        "Rank the vendors considering both quality and cost-effectiveness, and recommend the best fit."
     )
 
     vendor_sections: list[str] = []
-    for report in reports:
+    for idx, report in enumerate(reports):
         vendor_label = report.get("vendor_label", "Unknown Vendor")
         agent_outputs = report.get("agent_outputs", {})
         section_lines = [f"Vendor: {vendor_label}"]
+        
+        # Add cost/pricing information from proposal summary if available
+        if vendor_summaries and idx < len(vendor_summaries):
+            summary_entry = vendor_summaries[idx]
+            summary_block = summary_entry.get("summary", {}) if isinstance(summary_entry, dict) else {}
+            if isinstance(summary_block, dict):
+                overall_summary = summary_block.get("overall_summary", "")
+                # Extract any pricing mentions from the overall summary
+                if overall_summary and any(keyword in overall_summary.lower() for keyword in ["price", "cost", "fee", "subscription", "license", "$", "usd", "budget"]):
+                    section_lines.append("Pricing Information (from proposal):")
+                    section_lines.append(str(overall_summary))
+        
         if isinstance(agent_outputs, dict):
             for agent_name, summary in agent_outputs.items():
                 section_lines.append(f"{agent_name}:")
@@ -269,8 +282,10 @@ async def generate_comparison_summary(reports: list[dict[str, object]]) -> str |
         "\n\n---\n\n".join(vendor_sections)
         + "\n\nProvide a ranked comparison of the vendors. "
         "**You must present the comparison as a Markdown table** with columns for: "
-        "Vendor Name, Rank, Key Strengths, Key Risks, Compliance Status, and Overall Score. "
-        "After the table, provide a brief conclusion with a clear recommendation."
+        "Vendor Name, Rank, Estimated Cost/Pricing, Key Strengths, Key Risks, Compliance Status, and Overall Score. "
+        "If pricing information is available in the proposal summaries, include it in the Estimated Cost/Pricing column. "
+        "If not explicitly stated, note 'Not specified' but consider any pricing hints from the proposal. "
+        "After the table, provide a brief conclusion with a clear recommendation that considers BOTH quality and cost-effectiveness."
     )
 
     messages = [
@@ -317,7 +332,7 @@ async def perform_multi_vendor_analysis() -> None:
         for idx, result in enumerate(vendor_results)
     ]
 
-    comparison_summary = await generate_comparison_summary(reports)
+    comparison_summary = await generate_comparison_summary(reports, vendor_entries)
 
     st.session_state.vendor_agent_reports = reports
     st.session_state.vendor_comparison_summary = comparison_summary
@@ -537,135 +552,122 @@ elif selected_section == "Chat Console":
     with col1:
         st.image(image_path3, width=140)
     with col2:
-        st.title("Agent Group Chat")
-        current_vendor_label = (
-            vendor_display_names[selected_vendor_index]
-            if selected_vendor_index < len(vendor_display_names)
-            else f"Vendor {selected_vendor_index + 1}"
-        )
-        st.caption(f"Analyzing proposal from: **{current_vendor_label}**")
-        if vendor_entries:
-            chat_vendor_idx = st.selectbox(
-                "Switch vendor conversation",
-                options=list(range(len(vendor_entries))),
-                format_func=lambda idx: vendor_display_names[idx],
-                index=selected_vendor_index,
-                key="chat_vendor_switch",
-            )
-            if chat_vendor_idx != st.session_state.chat_selected_vendor_index:
-                st.session_state.chat_selected_vendor_index = chat_vendor_idx
-                st.session_state.chat = None
-                st.session_state.responses = []
-                st.session_state.bootstrap_loaded = False
-                st.session_state.welcome_displayed = False
-                st.rerun()
-        comparison_summary = st.session_state.get("vendor_comparison_summary")
-        if comparison_summary:
-            with st.expander("📊 View multi-vendor recommendation", expanded=False):
-                st.markdown(comparison_summary)
+        st.title("Proposal Q&A Chat")
+        st.caption("Ask questions about **all loaded proposals**")
     
-    just_bootstrapped = False
-
-    if st.session_state.chat is None:
-        bootstrap_stream_context: dict[str, dict[str, object]] = {}
-
-        def bootstrap_stream_handler(agent_name: str, chunk: str) -> None:
-            if not chunk:
-                return
-
-            context = bootstrap_stream_context.get(agent_name)
-            if context is None:
-                agent_logo = AGENT_LOGOS.get(agent_name, "🤖")
-                message_container = st.chat_message("assistant", avatar=agent_logo)
-                placeholder = message_container.empty()
-                header = f"**{agent_name} Agent:**\n\n"
-                placeholder.markdown(header)
-                context = {"placeholder": placeholder, "buffer": header}
-                bootstrap_stream_context[agent_name] = context
-
-            context = bootstrap_stream_context[agent_name]
-            context["buffer"] += chunk
-            placeholder = context["placeholder"]
-            if hasattr(placeholder, "markdown"):
-                placeholder.markdown(context["buffer"])
-
-        session, initial_messages = asyncio.run(initialize_chat(stream_handler=bootstrap_stream_handler))
-        st.session_state.chat = session
-        if not st.session_state.bootstrap_loaded:
-            st.session_state.responses.extend(initial_messages)
-            st.session_state.bootstrap_loaded = True
-            just_bootstrapped = True
-
-    if not st.session_state.welcome_displayed:
-        with st.chat_message("assistant", avatar=SYSTEM_LOGO):
-            st.markdown("**System:**")
-            st.markdown(WELCOME_MESSAGE)
-        st.session_state.welcome_displayed = True
-
-    # Display previous responses with correct emoji mapping
-    if not just_bootstrapped:
-        for response in st.session_state.get("responses", []):
-            role = response["role"]
-            content = response["content"]
-
-            if role == "user":
-                with st.chat_message("user", avatar=USER_LOGO):
-                    st.markdown("**You:**")  
-                    st.markdown(content)
+    # Initialize simple chat state
+    if "simple_chat_messages" not in st.session_state:
+        st.session_state.simple_chat_messages = []
+    
+    # Build context from all proposals
+    def build_all_proposals_context() -> str:
+        """Build a context string from all loaded proposals."""
+        context_parts = []
+        
+        # Add RFP summary
+        rfp_summary = st.session_state.get("rfp_summary_ready", "")
+        if rfp_summary:
+            context_parts.append("## RFP Summary\n" + str(rfp_summary))
+        
+        # Add all vendor proposals
+        for idx, entry in enumerate(vendor_entries):
+            summary_block = entry.get("summary", {}) if isinstance(entry, dict) else entry
+            vendor_label = vendor_display_names[idx] if idx < len(vendor_display_names) else f"Vendor {idx + 1}"
+            
+            vendor_section = f"\n## {vendor_label}\n"
+            if isinstance(summary_block, dict):
+                vendor_section += f"**Vendor Name:** {summary_block.get('vendor_name', vendor_label)}\n"
+                vendor_section += f"**Legal Summary:** {summary_block.get('legal_summary', 'Not specified')}\n"
+                vendor_section += f"**Overall Summary:** {summary_block.get('overall_summary', 'Not specified')}\n"
             else:
-                agent_logo = AGENT_LOGOS.get(role, "🤖")  
-                with st.chat_message("assistant", avatar=agent_logo):
-                    st.markdown(f"**{role} Agent:**")  
-                    st.markdown(content)
+                vendor_section += str(summary_block)
+            context_parts.append(vendor_section)
+        
+        # Add agent outputs if available
+        reports = st.session_state.get("vendor_agent_reports", [])
+        if reports:
+            context_parts.append("\n## Agent Analysis Results\n")
+            for report in reports:
+                vendor_label = report.get("vendor_label", "Unknown Vendor")
+                agent_outputs = report.get("agent_outputs", {})
+                if isinstance(agent_outputs, dict) and agent_outputs:
+                    context_parts.append(f"\n### {vendor_label} Analysis\n")
+                    for agent_name, output in agent_outputs.items():
+                        context_parts.append(f"**{agent_name}:** {output}\n")
+        
+        return "\n".join(context_parts)
+    
+    async def get_chat_response(user_message: str, chat_history: list) -> str:
+        """Get a response from the LLM based on the user's question and proposal context."""
+        chat_client = create_chat_client(model_variant="gpt5-mini")
+        reasoning_options = get_reasoning_options("gpt5-mini")
+        chat_options = dict(reasoning_options)
+        chat_options.pop("reasoning", None)
+        
+        proposals_context = build_all_proposals_context()
+        
+        system_prompt = f"""You are an expert procurement analyst assistant. You have access to the following RFP and vendor proposal information:
 
-    # Handle new user input
-    prompt = st.chat_input("Enter your message:", key="chat_input")      
+{proposals_context}
+
+Your role is to:
+1. Answer questions about any or all of the vendor proposals
+2. Compare vendors when asked
+3. Highlight key differences, risks, or compliance gaps
+4. Provide specific references to the proposal content when answering
+
+Be concise but thorough. If information is not available in the proposals, say so clearly."""
+
+        messages = [
+            ChatMessage(role="system", contents=[TextContent(text=system_prompt)]),
+        ]
+        
+        # Add chat history (last 10 messages for context)
+        for msg in chat_history[-10:]:
+            role = "user" if msg["role"] == "user" else "assistant"
+            messages.append(ChatMessage(role=role, contents=[TextContent(text=msg["content"])]))
+        
+        # Add current user message
+        messages.append(ChatMessage(role="user", contents=[TextContent(text=user_message)]))
+        
+        response = await chat_client.get_response(
+            messages=messages,
+            additional_properties=chat_options or None,
+        )
+        return response.text if response and getattr(response, "text", None) else "I couldn't generate a response. Please try again."
+    
+    # Show available proposals info
+    with st.expander("📑 Loaded Proposals", expanded=False):
+        if vendor_entries:
+            for idx, entry in enumerate(vendor_entries):
+                vendor_label = vendor_display_names[idx] if idx < len(vendor_display_names) else f"Vendor {idx + 1}"
+                st.markdown(f"- **{vendor_label}**")
+        else:
+            st.info("No proposals loaded yet.")
+    
+    # Display chat history
+    for msg in st.session_state.simple_chat_messages:
+        if msg["role"] == "user":
+            with st.chat_message("user", avatar=USER_LOGO):
+                st.markdown(msg["content"])
+        else:
+            with st.chat_message("assistant", avatar=SYSTEM_LOGO):
+                st.markdown(msg["content"])
+    
+    # Chat input
+    prompt = st.chat_input("Ask a question about the proposals...", key="simple_chat_input")
     
     if prompt:
-        # Display the new user message with the correct format
+        # Display user message
         with st.chat_message("user", avatar=USER_LOGO):
-            st.markdown("**You:**")
             st.markdown(prompt)
-
-        st.session_state.responses.append({"role": "user", "content": prompt})
-
-        stream_context: dict[str, dict[str, object]] = {}
-        streamed_content: dict[str, str] = {}
-
-        def stream_handler(agent_name: str, chunk: str) -> None:
-            if not chunk:
-                return
-
-            context = stream_context.get(agent_name)
-            if context is None:
-                agent_logo = AGENT_LOGOS.get(agent_name, "🤖")
-                message_container = st.chat_message("assistant", avatar=agent_logo)
-                placeholder = message_container.empty()
-                header = f"**{agent_name} Agent:**\n\n"
-                placeholder.markdown(header)
-                context = {"placeholder": placeholder, "buffer": header}
-                stream_context[agent_name] = context
-                streamed_content[agent_name] = ""
-
-            context = stream_context[agent_name]
-            context["buffer"] += chunk
-            context_placeholder = context["placeholder"]
-            if hasattr(context_placeholder, "markdown"):
-                context_placeholder.markdown(context["buffer"])
-            streamed_content[agent_name] = streamed_content.get(agent_name, "") + chunk
-
-        agent_responses = asyncio.run(
-            st.session_state.chat.handle_user_prompt_streaming(
-                prompt,
-                stream_handler=stream_handler,
-            )
-        )
-
-        for agent_name, agent_text in agent_responses:
-            if not agent_text:
-                agent_text = streamed_content.get(agent_name, "")
-            if not agent_text:
-                continue
-            st.session_state.responses.append({"role": agent_name, "content": agent_text})
-
+        st.session_state.simple_chat_messages.append({"role": "user", "content": prompt})
+        
+        # Get and display response
+        with st.chat_message("assistant", avatar=SYSTEM_LOGO):
+            with st.spinner("Thinking..."):
+                response = asyncio.run(get_chat_response(prompt, st.session_state.simple_chat_messages[:-1]))
+            st.markdown(response)
+        
+        st.session_state.simple_chat_messages.append({"role": "assistant", "content": response})
         st.rerun()

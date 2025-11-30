@@ -124,14 +124,24 @@ _PROMPTS: Dict[str, str] = {
         "  - **Security & Compliance**: Highlight encryption methods, data protection policies, and adherence to compliance frameworks.\n"
         "  - **Service-Level Agreements (SLA)**: Include response times, uptime guarantees, and escalation procedures.\n"
         "  - **Implementation Approach**: Summarize the deployment process, estimated timeline, and key milestones.\n"
-        "  - **Financials & Pricing**: Capture pricing models (subscription-based, per-user cost, or fixed fee), licensing terms, and any hidden costs.\n"
+        "  - **Financials & Pricing (CRITICAL)**: This is extremely important for procurement decisions. Extract ALL pricing information including:\n"
+        "    - Total cost or price (exact figures if available)\n"
+        "    - Pricing model (subscription, per-user, fixed fee, tiered, etc.)\n"
+        "    - License costs and terms\n"
+        "    - Implementation/setup fees\n"
+        "    - Annual maintenance or support fees\n"
+        "    - Any hidden costs, surcharges, or additional fees\n"
+        "    - Payment terms and conditions\n"
+        "    - Currency (USD, EUR, etc.)\n"
         "  - **Support & Customer Success**: Describe support models, availability (24/7, business hours), and dedicated account management options.\n"
-        "  - **Past Performance & References**: Highlight past client engagements, case studies, or success stories that validate the vendor’s capabilities.\n\n"
+        "  - **Past Performance & References**: Highlight past client engagements, case studies, or success stories that validate the vendor's capabilities.\n\n"
         "The **overall_summary** must include all major aspects of the proposal, ensuring the summary remains detailed and useful for decision-making.\n"
+        "**IMPORTANT**: Always include a dedicated 'Pricing & Cost' section in the overall_summary with all financial details extracted from the proposal.\n"
         "Do not omit any critical financial, security, or SLA details even if they are not explicitly requested in the proposal document.\n"
         "If certain details are missing from the proposal, note them as 'Not specified in the proposal' instead of omitting them.\n\n"
     ),
 }
+
 
 
 class VendorProposalSummary(BaseModel):
