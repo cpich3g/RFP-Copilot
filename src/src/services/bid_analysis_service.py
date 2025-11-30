@@ -1,6 +1,7 @@
 """Bid comparison and normalization utilities."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
@@ -14,6 +15,13 @@ from docx import Document
 
 from services.llm_helpers import dataframe_to_pretty_json, run_agent_sync
 
+logger = logging.getLogger(__name__)
+
+# Maximum file size allowed (10 MB)
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
+# Maximum rows allowed in a dataset to prevent DoS
+MAX_DATASET_ROWS = 10000
 
 SUPPLIER_ID_COLUMNS = [
     "supplier",
@@ -111,6 +119,34 @@ def _coerce_anchor_value(value: Any) -> Any:
         except ValueError:
             return stripped
     return value
+
+
+def _load_json_as_records(data: bytes, filename: str) -> List[Dict[str, Any]]:
+    """Load JSON data and ensure it's a list of records for DataFrame conversion.
+    
+    Args:
+        data: Raw bytes of the JSON file.
+        filename: Name of the file for error messages.
+        
+    Returns:
+        List of dictionaries suitable for DataFrame creation.
+        
+    Raises:
+        ValueError: If JSON is invalid or cannot be converted to records.
+    """
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse JSON file {filename}: {e}")
+        raise ValueError(f"Invalid JSON format in file '{filename}'.") from e
+    
+    # Convert single object to list for consistent DataFrame handling
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return parsed
+    
+    raise ValueError(f"JSON file '{filename}' must contain an object or array of objects.")
 
 
 @dataclass
@@ -248,21 +284,41 @@ class BidComparisonEngine:
 
     def _load_file(self, file_obj: Any) -> pd.DataFrame:
         name = getattr(file_obj, "name", "")
+        
+        # Validate filename to prevent path traversal
+        if not name or ".." in name or name.startswith("/"):
+            raise ValueError("Invalid filename provided.")
+        
         data = file_obj.read()
         file_obj.seek(0)
+        
+        # Validate file size
+        if len(data) > MAX_FILE_SIZE_BYTES:
+            raise ValueError(f"File '{name}' exceeds maximum allowed size of {MAX_FILE_SIZE_BYTES // (1024*1024)} MB.")
+        
         stream = BytesIO(data)
         suffix = name.split(".")[-1].lower()
-        if suffix in {"csv", "txt"}:
-            df = pd.read_csv(stream)
-        elif suffix in {"xls", "xlsx"}:
-            df = pd.read_excel(stream)
-        elif suffix in {"json"}:
-            records = json.loads(data.decode("utf-8"))
-            df = pd.DataFrame(records)
-        elif suffix == "docx":
-            df = _docx_to_dataframe(data)
-        else:
-            raise ValueError(f"Unsupported file format for {name}. Upload CSV, XLSX, JSON, or DOCX.")
+        
+        try:
+            if suffix in {"csv", "txt"}:
+                df = pd.read_csv(stream)
+            elif suffix in {"xls", "xlsx"}:
+                df = pd.read_excel(stream)
+            elif suffix in {"json"}:
+                records = _load_json_as_records(data, name)
+                df = pd.DataFrame(records)
+            elif suffix == "docx":
+                df = _docx_to_dataframe(data)
+            else:
+                raise ValueError(f"Unsupported file format for {name}. Upload CSV, XLSX, JSON, or DOCX.")
+        except pd.errors.ParserError as e:
+            logger.warning(f"Failed to parse file {name}: {e}")
+            raise ValueError(f"Failed to parse file '{name}'. Please ensure the file is properly formatted.") from e
+        
+        # Validate row count to prevent DoS
+        if len(df) > MAX_DATASET_ROWS:
+            raise ValueError(f"File '{name}' contains too many rows ({len(df)}). Maximum allowed is {MAX_DATASET_ROWS}.")
+        
         return df
 
     def _prepare_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -522,21 +578,40 @@ class MultiRFPComparisonEngine:
 
     def _load_vendor_file(self, file_obj: Any) -> pd.DataFrame:
         name = getattr(file_obj, "name", "")
+        
+        # Validate filename to prevent path traversal
+        if not name or ".." in name or name.startswith("/"):
+            raise ValueError("Invalid filename provided.")
+        
         data = file_obj.read()
         file_obj.seek(0)
+        
+        # Validate file size
+        if len(data) > MAX_FILE_SIZE_BYTES:
+            raise ValueError(f"File '{name}' exceeds maximum allowed size of {MAX_FILE_SIZE_BYTES // (1024*1024)} MB.")
+        
         stream = BytesIO(data)
         suffix = name.split(".")[-1].lower()
-        if suffix in {"csv", "txt"}:
-            df = pd.read_csv(stream)
-        elif suffix in {"xls", "xlsx"}:
-            df = pd.read_excel(stream)
-        elif suffix in {"json"}:
-            records = json.loads(data.decode("utf-8"))
-            df = pd.DataFrame(records)
-        elif suffix == "docx":
-            df = _docx_to_dataframe(data)
-        else:
-            raise ValueError(f"Unsupported file format for {name}. Upload CSV, XLSX, JSON, or DOCX.")
+        
+        try:
+            if suffix in {"csv", "txt"}:
+                df = pd.read_csv(stream)
+            elif suffix in {"xls", "xlsx"}:
+                df = pd.read_excel(stream)
+            elif suffix in {"json"}:
+                records = _load_json_as_records(data, name)
+                df = pd.DataFrame(records)
+            elif suffix == "docx":
+                df = _docx_to_dataframe(data)
+            else:
+                raise ValueError(f"Unsupported file format for {name}. Upload CSV, XLSX, JSON, or DOCX.")
+        except pd.errors.ParserError as e:
+            logger.warning(f"Failed to parse file {name}: {e}")
+            raise ValueError(f"Failed to parse file '{name}'. Please ensure the file is properly formatted.") from e
+        
+        # Validate row count to prevent DoS
+        if len(df) > MAX_DATASET_ROWS:
+            raise ValueError(f"File '{name}' contains too many rows ({len(df)}). Maximum allowed is {MAX_DATASET_ROWS}.")
         
         # Ensure supplier column exists
         if "supplier" not in df.columns:
@@ -545,7 +620,9 @@ class MultiRFPComparisonEngine:
                     df = df.rename(columns={col: "supplier"})
                     break
             else:
-                df["supplier"] = name.split(".")[0]
+                # Use base filename (without extension) as supplier name using rsplit to handle
+                # multiple dots in filename (e.g., "vendor.data.json" -> "vendor.data")
+                df["supplier"] = name.rsplit(".", 1)[0] if "." in name else name
         
         return df
 
@@ -613,37 +690,62 @@ class MultiRFPComparisonEngine:
 
 
 def parse_rfp_spec(uploaded_file: Any) -> dict:
+    """Parse RFP specification from uploaded file with input validation."""
     if not uploaded_file:
         return {}
+    
     name = getattr(uploaded_file, "name", "")
+    
+    # Validate filename
+    if not name or ".." in name or name.startswith("/"):
+        raise ValueError("Invalid filename provided.")
+    
     data = uploaded_file.read()
     uploaded_file.seek(0)
+    
+    # Validate file size (5 MB max for spec files)
+    if len(data) > 5 * 1024 * 1024:
+        raise ValueError("RFP spec file exceeds maximum allowed size of 5 MB.")
+    
     suffix = name.split(".")[-1].lower()
-    if suffix in {"json"}:
-        raw = json.loads(data.decode("utf-8"))
-        return {key: _coerce_anchor_value(value) for key, value in raw.items()}
-    if suffix in {"csv"}:
-        df = pd.read_csv(BytesIO(data))
-        anchors: Dict[str, Any] = {}
-        for row in df.values:
-            if len(row) < 2:
-                continue
-            key = str(row[0]).strip()
-            value = _coerce_anchor_value(row[1])
-            anchors[key] = value
-        return anchors
-    if suffix in {"txt", "md"}:
-        text = data.decode("utf-8")
-        anchors = {}
-        for line in text.splitlines():
-            if ":" in line:
-                key, value = line.split(":", 1)
-                anchors[key.strip()] = _coerce_anchor_value(value)
-        return anchors
-    if suffix in {"docx"}:
-        document = _load_docx_document(data)
-        anchors_raw = _docx_to_key_values(document)
-        if not anchors_raw:
-            raise ValueError("DOCX spec must contain a table or key:value lines.")
-        return {key.strip(): _coerce_anchor_value(val) for key, val in anchors_raw.items() if key}
-    raise ValueError("Unsupported RFP spec format. Provide JSON, CSV, text, or DOCX.")
+    
+    try:
+        if suffix in {"json"}:
+            raw = json.loads(data.decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("JSON RFP spec must be an object with key-value pairs.")
+            return {str(key): _coerce_anchor_value(value) for key, value in raw.items()}
+        if suffix in {"csv"}:
+            df = pd.read_csv(BytesIO(data))
+            anchors: Dict[str, Any] = {}
+            for row in df.values:
+                if len(row) < 2:
+                    continue
+                key = str(row[0]).strip()
+                if key:  # Only add non-empty keys
+                    value = _coerce_anchor_value(row[1])
+                    anchors[key] = value
+            return anchors
+        if suffix in {"txt", "md"}:
+            text = data.decode("utf-8")
+            anchors = {}
+            for line in text.splitlines():
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip()
+                    if key:  # Only add non-empty keys
+                        anchors[key] = _coerce_anchor_value(value)
+            return anchors
+        if suffix in {"docx"}:
+            document = _load_docx_document(data)
+            anchors_raw = _docx_to_key_values(document)
+            if not anchors_raw:
+                raise ValueError("DOCX spec must contain a table or key:value lines.")
+            return {str(key).strip(): _coerce_anchor_value(val) for key, val in anchors_raw.items() if key}
+        raise ValueError("Unsupported RFP spec format. Provide JSON, CSV, text, or DOCX.")
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse JSON file {name}: {e}")
+        raise ValueError(f"Invalid JSON format in file '{name}'.") from e
+    except pd.errors.ParserError as e:
+        logger.warning(f"Failed to parse CSV file {name}: {e}")
+        raise ValueError(f"Invalid CSV format in file '{name}'.") from e

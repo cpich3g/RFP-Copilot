@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -243,12 +244,28 @@ class ProjectStorage:
             storage_dir = os.path.join(
                 os.path.dirname(__file__), "..", "data", "projects"
             )
-        self.storage_dir = Path(storage_dir)
+        self.storage_dir = Path(storage_dir).resolve()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._index_file = self.storage_dir / "index.json"
 
+    def _validate_project_id(self, project_id: str) -> None:
+        """Validate project ID to prevent path traversal attacks."""
+        if not project_id:
+            raise ValueError("Project ID cannot be empty.")
+        # Check for path traversal attempts
+        if ".." in project_id or "/" in project_id or "\\" in project_id:
+            raise ValueError("Invalid project ID format.")
+        # Only allow alphanumeric, hyphens, and underscores (UUID format)
+        if not re.match(r'^[a-zA-Z0-9_-]+$', project_id):
+            raise ValueError("Invalid project ID format.")
+
     def _get_project_path(self, project_id: str) -> Path:
-        return self.storage_dir / f"{project_id}.json"
+        self._validate_project_id(project_id)
+        path = self.storage_dir / f"{project_id}.json"
+        # Ensure the resolved path is within the storage directory
+        if not path.resolve().is_relative_to(self.storage_dir):
+            raise ValueError("Invalid project path.")
+        return path
 
     def _load_index(self) -> Dict[str, Any]:
         if self._index_file.exists():
