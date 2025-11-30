@@ -2,8 +2,14 @@ fpdf
 jinja2
 openai
 python-dotenv
-semantic-kernel
+agent-framework==1.0.0b251016
 streamlit
+streamlit-webrtc
+plotly
+pandas
+openpyxl
+python-docx
+tabulate
 azure-identity
 azure-ai-documentintelligence
 azure-search-documents==11.6.0b7
