@@ -32,11 +32,17 @@ st.logo(
 # Sidebar for consistency
 with st.sidebar:
     st.image(image_path2, width=160)
-    st.markdown("### Instructions")
+    st.markdown("### Quick Actions")
+    if st.button("📁 Manage Projects", use_container_width=True):
+        st.switch_page("pages/0_Projects.py")
+    st.markdown("---")
+    st.markdown("### Quick Analysis")
     st.info(
+        "For quick analysis without creating a project:\n"
         "1. **Upload RFP**: Select the Request for Proposal document.\n"
         "2. **Upload Proposals**: Select one or more vendor proposals.\n"
-        "3. **Analyze**: Click to start the AI-powered analysis."
+        "3. **Analyze**: Click to start the AI-powered analysis.\n\n"
+        "**Or** use Projects for incremental workflows."
     )
     st.markdown("---")
     st.caption("Powered by Azure OpenAI")
@@ -46,8 +52,24 @@ with col1:
     st.image(image_path2, use_container_width=True)
 with col2:
     st.title("AI-Powered RFP Analyzer")
-st.markdown('''''')
 
+# Project workflow callout
+with st.container(border=True):
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.markdown("### 📁 Need an Incremental Workflow?")
+        st.markdown(
+            "Use **Projects** to upload documents step-by-step, select which agents to run at each stage, "
+            "and maintain state across sessions. Ideal for standard procurement SOP where not all agents are needed initially."
+        )
+    with col_b:
+        if st.button("Open Projects →", type="primary", use_container_width=True):
+            st.switch_page("pages/0_Projects.py")
+
+st.markdown("---")
+st.markdown("### Quick Analysis")
+st.caption("For a one-time analysis with all agents, use the quick workflow below.")
+st.markdown('')
 if "session_uid" not in st.session_state:
     st.session_state.session_uid = str(uuid.uuid4())  # Generate a new UID
 
