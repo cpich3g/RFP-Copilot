@@ -54,7 +54,12 @@ def get_openai_auth_kwargs() -> Dict[str, Any]:
     `AzureOpenAIChatClient` clients.
 
     Returns:
-        Dict containing either 'api_key' or 'azure_ad_token_provider' key.
+        Dict containing exactly one of:
+        - 'api_key': When API key authentication is configured or used as fallback.
+        - 'azure_ad_token_provider': When Azure AD token authentication is used.
+
+    Raises:
+        RuntimeError: If DefaultAzureCredential fails and no API key fallback is configured.
     """
     auth_kwargs: Dict[str, Any] = {}
     api_key = os.environ.get("AZURE_OPENAI_API_KEY")
