@@ -339,7 +339,7 @@ if (
 ):
     try:
         with st.spinner("Running multi-vendor agent analysis..."):
-            asyncio.run(perform_multi_vendor_analysis())
+            asyncio.get_event_loop().run_until_complete(perform_multi_vendor_analysis())
     except Exception as exc:
         st.error(f"Multi-vendor analysis failed: {exc}")
 
@@ -589,7 +589,7 @@ elif selected_section == "Chat Console":
             if hasattr(placeholder, "markdown"):
                 placeholder.markdown(context["buffer"])
 
-        session, initial_messages = asyncio.run(initialize_chat(stream_handler=bootstrap_stream_handler))
+        session, initial_messages = asyncio.get_event_loop().run_until_complete(initialize_chat(stream_handler=bootstrap_stream_handler))
         st.session_state.chat = session
         if not st.session_state.bootstrap_loaded:
             st.session_state.responses.extend(initial_messages)
@@ -654,7 +654,7 @@ elif selected_section == "Chat Console":
                 context_placeholder.markdown(context["buffer"])
             streamed_content[agent_name] = streamed_content.get(agent_name, "") + chunk
 
-        agent_responses = asyncio.run(
+        agent_responses = asyncio.get_event_loop().run_until_complete(
             st.session_state.chat.handle_user_prompt_streaming(
                 prompt,
                 stream_handler=stream_handler,
