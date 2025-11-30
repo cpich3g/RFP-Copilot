@@ -354,7 +354,7 @@ if (
 ):
     try:
         with st.spinner("Running multi-vendor agent analysis..."):
-            asyncio.run(perform_multi_vendor_analysis())
+            asyncio.get_event_loop().run_until_complete(perform_multi_vendor_analysis())
     except Exception as exc:
         st.error(f"Multi-vendor analysis failed: {exc}")
 
@@ -555,6 +555,7 @@ elif selected_section == "Chat Console":
         st.title("Proposal Q&A Chat")
         st.caption("Ask questions about **all loaded proposals**")
     
+<<<<<<< HEAD
     # Initialize simple chat state
     if "simple_chat_messages" not in st.session_state:
         st.session_state.simple_chat_messages = []
@@ -579,6 +580,56 @@ elif selected_section == "Chat Console":
                 vendor_section += f"**Vendor Name:** {summary_block.get('vendor_name', vendor_label)}\n"
                 vendor_section += f"**Legal Summary:** {summary_block.get('legal_summary', 'Not specified')}\n"
                 vendor_section += f"**Overall Summary:** {summary_block.get('overall_summary', 'Not specified')}\n"
+=======
+    just_bootstrapped = False
+
+    if st.session_state.chat is None:
+        bootstrap_stream_context: dict[str, dict[str, object]] = {}
+
+        def bootstrap_stream_handler(agent_name: str, chunk: str) -> None:
+            if not chunk:
+                return
+
+            context = bootstrap_stream_context.get(agent_name)
+            if context is None:
+                agent_logo = AGENT_LOGOS.get(agent_name, "🤖")
+                message_container = st.chat_message("assistant", avatar=agent_logo)
+                placeholder = message_container.empty()
+                header = f"**{agent_name} Agent:**\n\n"
+                placeholder.markdown(header)
+                context = {"placeholder": placeholder, "buffer": header}
+                bootstrap_stream_context[agent_name] = context
+
+            context = bootstrap_stream_context[agent_name]
+            context["buffer"] += chunk
+            placeholder = context["placeholder"]
+            if hasattr(placeholder, "markdown"):
+                placeholder.markdown(context["buffer"])
+
+        session, initial_messages = asyncio.get_event_loop().run_until_complete(initialize_chat(stream_handler=bootstrap_stream_handler))
+        st.session_state.chat = session
+        if not st.session_state.bootstrap_loaded:
+            st.session_state.responses.extend(initial_messages)
+            st.session_state.bootstrap_loaded = True
+            just_bootstrapped = True
+
+    if not st.session_state.welcome_displayed:
+        with st.chat_message("assistant", avatar=SYSTEM_LOGO):
+            st.markdown("**System:**")
+            st.markdown(WELCOME_MESSAGE)
+        st.session_state.welcome_displayed = True
+
+    # Display previous responses with correct emoji mapping
+    if not just_bootstrapped:
+        for response in st.session_state.get("responses", []):
+            role = response["role"]
+            content = response["content"]
+
+            if role == "user":
+                with st.chat_message("user", avatar=USER_LOGO):
+                    st.markdown("**You:**")  
+                    st.markdown(content)
+>>>>>>> a8f1a75e715c51c8a84f1b92488be06bc428048a
             else:
                 vendor_section += str(summary_block)
             context_parts.append(vendor_section)
@@ -661,6 +712,7 @@ Be concise but thorough. If information is not available in the proposals, say s
         # Display user message
         with st.chat_message("user", avatar=USER_LOGO):
             st.markdown(prompt)
+<<<<<<< HEAD
         st.session_state.simple_chat_messages.append({"role": "user", "content": prompt})
         
         # Get and display response
@@ -670,4 +722,48 @@ Be concise but thorough. If information is not available in the proposals, say s
             st.markdown(response)
         
         st.session_state.simple_chat_messages.append({"role": "assistant", "content": response})
+=======
+
+        st.session_state.responses.append({"role": "user", "content": prompt})
+
+        stream_context: dict[str, dict[str, object]] = {}
+        streamed_content: dict[str, str] = {}
+
+        def stream_handler(agent_name: str, chunk: str) -> None:
+            if not chunk:
+                return
+
+            context = stream_context.get(agent_name)
+            if context is None:
+                agent_logo = AGENT_LOGOS.get(agent_name, "🤖")
+                message_container = st.chat_message("assistant", avatar=agent_logo)
+                placeholder = message_container.empty()
+                header = f"**{agent_name} Agent:**\n\n"
+                placeholder.markdown(header)
+                context = {"placeholder": placeholder, "buffer": header}
+                stream_context[agent_name] = context
+                streamed_content[agent_name] = ""
+
+            context = stream_context[agent_name]
+            context["buffer"] += chunk
+            context_placeholder = context["placeholder"]
+            if hasattr(context_placeholder, "markdown"):
+                context_placeholder.markdown(context["buffer"])
+            streamed_content[agent_name] = streamed_content.get(agent_name, "") + chunk
+
+        agent_responses = asyncio.get_event_loop().run_until_complete(
+            st.session_state.chat.handle_user_prompt_streaming(
+                prompt,
+                stream_handler=stream_handler,
+            )
+        )
+
+        for agent_name, agent_text in agent_responses:
+            if not agent_text:
+                agent_text = streamed_content.get(agent_name, "")
+            if not agent_text:
+                continue
+            st.session_state.responses.append({"role": agent_name, "content": agent_text})
+
+>>>>>>> a8f1a75e715c51c8a84f1b92488be06bc428048a
         st.rerun()

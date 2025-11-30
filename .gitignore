@@ -33,3 +33,6 @@ htmlcov/
 
 # Azure local config
 .azure/
+
+# Project data (user-specific)
+src/src/data/
