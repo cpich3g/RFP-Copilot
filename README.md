@@ -96,6 +96,17 @@ An end-to-end workspace for pre-brief, live guidance, and post-session learning:
 - Provides a live copilot chat experience with optional WebRTC voice capture, tactic palettes, and real-time counter-offer recommendations.
 - Logs outcomes, concessions, and lessons learned to build a persistent strategy memory for future negotiations.
 
+### 📁 Project Management Module *(New)*
+
+An incremental workflow system for procurement teams following standard SOP:
+
+- Create **Projects** as containers for RFP documents, vendor proposals, and supporting materials.
+- Upload documents incrementally—start with just the RFP, add proposals as they arrive.
+- Configure which agents to run at each stage (e.g., initially only RFP Compliance and Legal for quick compliance checks).
+- Persist project state across sessions with JSON-based storage.
+- Chat within project context to ask questions about the RFP, proposals, or analysis results.
+- Supports the standard buyer SOP where not all agents are needed from the start.
+
 Together, these features allow procurement teams to move faster, reduce subjectivity, ensure compliance, and drive stronger vendor outcomes with confidence.
 
 ## 📐 Architecture
