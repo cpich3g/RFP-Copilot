@@ -40,6 +40,53 @@ _credential = DefaultAzureCredential(exclude_interactive_browser_credential=True
 _azure_oai_scope = os.environ.get("AZURE_OPENAI_TOKEN_SCOPE", "https://cognitiveservices.azure.com/.default")
 
 
+def _get_azure_ad_token() -> str:
+    """Get an Azure AD token for Azure OpenAI authentication."""
+    return _credential.get_token(_azure_oai_scope).token
+
+
+def get_openai_auth_kwargs() -> Dict[str, Any]:
+    """Return authentication-related kwargs for Azure OpenAI clients.
+
+    This function centralizes the authentication logic for Azure OpenAI,
+    supporting both API key and DefaultAzureCredential authentication modes.
+    The returned dict can be used with both `openai.AzureOpenAI` and
+    `AzureOpenAIChatClient` clients.
+
+    Returns:
+        Dict containing either 'api_key' or 'azure_ad_token_provider' key.
+    """
+    auth_kwargs: Dict[str, Any] = {}
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    auth_mode = os.environ.get("AZURE_OPENAI_AUTH_MODE", "default_credential").lower()
+
+    if auth_mode == "api_key":
+        if api_key:
+            auth_kwargs["api_key"] = api_key
+        else:
+            logger.warning(
+                "AZURE_OPENAI_AUTH_MODE is set to 'api_key' but AZURE_OPENAI_API_KEY is missing; falling back to DefaultAzureCredential."
+            )
+            auth_kwargs["azure_ad_token_provider"] = _get_azure_ad_token
+    else:
+        try:
+            _credential.get_token(_azure_oai_scope)
+            auth_kwargs["azure_ad_token_provider"] = _get_azure_ad_token
+        except Exception as exc:  # pragma: no cover - network credential check
+            if api_key:
+                logger.warning(
+                    "DefaultAzureCredential failed to acquire a token (%s); falling back to AZURE_OPENAI_API_KEY.",
+                    exc,
+                )
+                auth_kwargs["api_key"] = api_key
+            else:
+                raise RuntimeError(
+                    "DefaultAzureCredential could not acquire a token and no API key fallback is configured."
+                ) from exc
+
+    return auth_kwargs
+
+
 def _resolve_model_settings(model_variant: str) -> Dict[str, Any]:
     variant = model_variant.lower()
     config = _MODEL_VARIANTS.get(variant)
@@ -96,41 +143,13 @@ def create_chat_client(*, model_variant: str = "gpt5-mini") -> AzureOpenAIChatCl
         "deployment_name": settings["deployment_name"],
     }
 
-    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-    auth_mode = os.environ.get("AZURE_OPENAI_AUTH_MODE", "default_credential").lower()
-
-    def _get_token() -> str:
-        return _credential.get_token(_azure_oai_scope).token
-
-    if auth_mode == "api_key":
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        else:
-            logger.warning(
-                "AZURE_OPENAI_AUTH_MODE is set to 'api_key' but AZURE_OPENAI_API_KEY is missing; falling back to DefaultAzureCredential."
-            )
-            client_kwargs["ad_token_provider"] = _get_token
-    else:
-        if api_key and auth_mode not in {"default_credential", "managed_identity"}:
-            logger.info(
-                "Using DefaultAzureCredential for Azure OpenAI (override mode '%s'); API key is available as manual fallback.",
-                auth_mode,
-            )
-        try:
-            _credential.get_token(_azure_oai_scope)
-            client_kwargs["ad_token_provider"] = _get_token
-        except Exception as exc:  # pragma: no cover - network credential check
-            if api_key:
-                logger.warning(
-                    "DefaultAzureCredential failed to acquire a token (%s); falling back to AZURE_OPENAI_API_KEY.",
-                    exc,
-                )
-                client_kwargs.pop("ad_token_provider", None)
-                client_kwargs["api_key"] = api_key
-            else:
-                raise RuntimeError(
-                    "DefaultAzureCredential could not acquire a token and no API key fallback is configured."
-                ) from exc
+    # Get shared authentication kwargs and adapt for AzureOpenAIChatClient
+    auth_kwargs = get_openai_auth_kwargs()
+    if "azure_ad_token_provider" in auth_kwargs:
+        # AzureOpenAIChatClient uses 'ad_token_provider' instead of 'azure_ad_token_provider'
+        client_kwargs["ad_token_provider"] = auth_kwargs["azure_ad_token_provider"]
+    elif "api_key" in auth_kwargs:
+        client_kwargs["api_key"] = auth_kwargs["api_key"]
 
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
     if api_version:

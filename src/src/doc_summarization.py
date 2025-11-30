@@ -9,12 +9,11 @@ from typing import Any, Dict, Iterable
 
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
-from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from pydantic import BaseModel
 
-from app import get_model_settings, get_reasoning_options
+from app import get_model_settings, get_openai_auth_kwargs, get_reasoning_options
 
 load_dotenv()
 
@@ -22,9 +21,6 @@ DOCUMENT_INTELLIGENCE_ENDPOINT = os.environ["AZURE_DOCUMENT_INTELLIGENCE_ENDPOIN
 DOCUMENT_INTELLIGENCE_KEY = os.environ["AZURE_DOC_INTELLIGENCE_KEY"]
 AZURE_OPENAI_ENDPOINT = os.environ["AZURE_OPENAI_ENDPOINT"]
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_AUTH_MODE = os.getenv("AZURE_OPENAI_AUTH_MODE", "default_credential").lower()
-AZURE_OPENAI_SCOPE = os.getenv("AZURE_OPENAI_TOKEN_SCOPE", "https://cognitiveservices.azure.com/.default")
 
 logger = logging.getLogger(__name__)
 
@@ -34,43 +30,17 @@ document_intelligence_client = DocumentIntelligenceClient(
     credential=AzureKeyCredential(DOCUMENT_INTELLIGENCE_KEY),
 )
 
-credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-
-
-def _get_azure_ad_token(scope: str = AZURE_OPENAI_SCOPE) -> str:
-    return credential.get_token(scope).token
-
 
 def _build_openai_client() -> AzureOpenAI:
+    """Build an Azure OpenAI client using shared authentication logic from app.py."""
     client_kwargs: Dict[str, Any] = {
         "azure_endpoint": AZURE_OPENAI_ENDPOINT,
         "api_version": AZURE_OPENAI_API_VERSION,
     }
 
-    if AZURE_OPENAI_AUTH_MODE == "api_key":
-        if AZURE_OPENAI_KEY:
-            client_kwargs["api_key"] = AZURE_OPENAI_KEY
-        else:
-            logger.warning(
-                "AZURE_OPENAI_AUTH_MODE is set to 'api_key' but AZURE_OPENAI_API_KEY is missing; falling back to DefaultAzureCredential."
-            )
-            client_kwargs["azure_ad_token_provider"] = _get_azure_ad_token
-    else:
-        try:
-            credential.get_token(AZURE_OPENAI_SCOPE)
-            client_kwargs["azure_ad_token_provider"] = _get_azure_ad_token
-        except Exception as exc:  # pragma: no cover - network credential check
-            if AZURE_OPENAI_KEY:
-                logger.warning(
-                    "DefaultAzureCredential failed to acquire a token (%s); falling back to AZURE_OPENAI_API_KEY.",
-                    exc,
-                )
-                client_kwargs.pop("azure_ad_token_provider", None)
-                client_kwargs["api_key"] = AZURE_OPENAI_KEY
-            else:
-                raise RuntimeError(
-                    "DefaultAzureCredential could not acquire a token and no API key fallback is configured."
-                ) from exc
+    # Get shared authentication kwargs from app.py
+    auth_kwargs = get_openai_auth_kwargs()
+    client_kwargs.update(auth_kwargs)
 
     return AzureOpenAI(**client_kwargs)
 
