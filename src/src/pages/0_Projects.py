@@ -63,6 +63,30 @@ if "project_view_mode" not in st.session_state:
     st.session_state.project_view_mode = "list"  # list, create, detail
 
 
+def normalize_summary(summary, doc_type: str = "rfp"):
+    """Normalize summary to a consistent dict format."""
+    if summary is None:
+        return None
+    if isinstance(summary, dict):
+        return summary
+    if isinstance(summary, str):
+        if doc_type == "rfp":
+            return {"content": summary}
+        return {"content": summary}
+    return {"content": str(summary)}
+
+
+def extract_summary_content(summary) -> str:
+    """Extract content string from summary dict."""
+    if summary is None:
+        return ""
+    if isinstance(summary, str):
+        return summary
+    if isinstance(summary, dict):
+        return summary.get("content", summary.get("overall_summary", ""))
+    return str(summary)
+
+
 AGENT_LABELS = {
     AgentType.RFP_COMPLIANCE: ("📜 RFP Compliance", "Evaluate proposal alignment with RFP requirements"),
     AgentType.LEGAL_COMPLIANCE: ("⚖️ Legal & Regulatory", "Assess legal and regulatory compliance risks"),
@@ -242,10 +266,10 @@ def render_document_upload(project: Project):
                         project,
                         name=rfp_file.name,
                         doc_type=DocumentType.RFP,
-                        summary={"content": summary} if isinstance(summary, str) else summary,
+                        summary=normalize_summary(summary, "rfp"),
                     )
                     if summary:
-                        project.rfp_summary = summary if isinstance(summary, str) else summary.get("content", "")
+                        project.rfp_summary = extract_summary_content(summary)
                         project_service.update_project(project)
                 st.success("RFP uploaded!" + (" and summarized!" if summary else ""))
                 st.rerun()
@@ -284,7 +308,7 @@ def render_document_upload(project: Project):
                         project,
                         name=prop_file.name,
                         doc_type=DocumentType.PROPOSAL,
-                        summary=summary if isinstance(summary, dict) else {"content": summary} if summary else None,
+                        summary=normalize_summary(summary, "proposal"),
                     )
             st.success(f"{len(proposal_files)} proposal(s) uploaded!")
             st.rerun()

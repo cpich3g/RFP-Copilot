@@ -11,10 +11,15 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def _utc_now() -> str:
+    """Return current UTC time as ISO format string."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 class DocumentType(str, Enum):
@@ -315,7 +320,7 @@ class ProjectService:
         enabled_agents: Optional[List[AgentType]] = None,
     ) -> Project:
         """Create a new project."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = _utc_now()
         if enabled_agents is None:
             # Default to RFP compliance and Legal compliance for initial review
             enabled_agents = [AgentType.RFP_COMPLIANCE, AgentType.LEGAL_COMPLIANCE]
@@ -338,7 +343,7 @@ class ProjectService:
 
     def update_project(self, project: Project) -> Project:
         """Update an existing project."""
-        project.updated_at = datetime.utcnow().isoformat() + "Z"
+        project.updated_at = _utc_now()
         self.storage.save(project)
         return project
 
@@ -363,7 +368,7 @@ class ProjectService:
             id=str(uuid.uuid4()),
             name=name,
             doc_type=doc_type,
-            uploaded_at=datetime.utcnow().isoformat() + "Z",
+            uploaded_at=_utc_now(),
             summary=summary,
             file_path=file_path,
         )
@@ -425,7 +430,7 @@ class ProjectService:
                 analysis.agent_outputs[agent_type.value] = AgentOutput(
                     agent_type=agent_type,
                     output=output,
-                    generated_at=datetime.utcnow().isoformat() + "Z",
+                    generated_at=_utc_now(),
                 )
                 self.update_project(project)
                 return analysis
@@ -442,7 +447,7 @@ class ProjectService:
         message = ChatMessage(
             role=role,
             content=content,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=_utc_now(),
             agent_name=agent_name,
         )
         project.chat_history.append(message)

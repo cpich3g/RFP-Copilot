@@ -62,7 +62,7 @@ load_dotenv()
 
 def load_css(file_path):
     with open(file_path, encoding="utf-8") as f:
-        st.html(f"<style>{f.read()}</style>")
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 
 css_path = pathlib.Path(__file__).parent.parent / "style.css"
